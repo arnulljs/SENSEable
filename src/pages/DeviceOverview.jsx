@@ -23,9 +23,27 @@ const IconChevron = ({ open }) => (
 
 export default function DeviceOverview({ onSelectSensor }) {
   const [activeTab, setActiveTab] = useState('overview');
-  // Track which device/module sections are collapsed
-  const [expandedDevices, setExpandedDevices] = useState({ n1: true, n2: false });
-  const [expandedModules, setExpandedModules] = useState({ 'board-1': true });
+
+  // Track which device/module sections are collapsed.
+  // Computed from whatever is actually in `devices` — not hardcoded to
+  // specific IDs — so this stays correct no matter how many ESP32 nodes
+  // or expansion boards the backend reports.
+  //   • A device expands by default only if it has at least one module
+  //     to show (an empty device would just reveal a "no modules" line).
+  //   • Every module that does exist starts expanded, since that's the
+  //     whole point of the overview page.
+  const [expandedDevices, setExpandedDevices] = useState(() =>
+    devices.reduce((acc, d) => {
+      acc[d.id] = d.modules.length > 0;
+      return acc;
+    }, {})
+  );
+  const [expandedModules, setExpandedModules] = useState(() =>
+    devices.reduce((acc, d) => {
+      d.modules.forEach(m => { acc[m.id] = true; });
+      return acc;
+    }, {})
+  );
 
   function toggleDevice(id) {
     setExpandedDevices(prev => ({ ...prev, [id]: !prev[id] }));

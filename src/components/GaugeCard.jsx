@@ -20,6 +20,9 @@ function angleToPoint(cx, cy, r, angleDeg) {
 // pct: 0 (left/min) → 1 (right/max)
 //
 // We split into two ≤90° arcs at the top to avoid SVG large-arc-flag ambiguity.
+// sweep-flag=1 traces the correct circle (centered at cx,cy) going left→top→right;
+// sweep-flag=0 would draw the mirrored circle on the wrong side, producing two
+// disjointed half-arcs instead of one continuous semicircle.
 function buildFillPath(cx, cy, r, pct) {
   if (pct <= 0) return null;
   const clamped = Math.min(pct, 1);
@@ -31,14 +34,14 @@ function buildFillPath(cx, cy, r, pct) {
   const top  = angleToPoint(cx, cy, r, 90);
 
   if (clamped <= 0.5) {
-    // Single arc: left → current point (0–90°, sweep CCW=upward visually → sweep=0 in SVG)
-    return `M ${left.x} ${left.y} A ${r} ${r} 0 0 0 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
+    // Single arc: left → current point (0–90°)
+    return `M ${left.x} ${left.y} A ${r} ${r} 0 0 1 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
   }
   // Two arcs: left → top, then top → current point (each ≤90°)
   return (
     `M ${left.x} ${left.y}` +
-    ` A ${r} ${r} 0 0 0 ${top.x} ${top.y}` +
-    ` A ${r} ${r} 0 0 0 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`
+    ` A ${r} ${r} 0 0 1 ${top.x} ${top.y}` +
+    ` A ${r} ${r} 0 0 1 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`
   );
 }
 
@@ -49,8 +52,8 @@ function buildBgPath(cx, cy, r) {
   const right = angleToPoint(cx, cy, r, 0);
   return (
     `M ${left.x} ${left.y}` +
-    ` A ${r} ${r} 0 0 0 ${top.x} ${top.y}` +
-    ` A ${r} ${r} 0 0 0 ${right.x} ${right.y}`
+    ` A ${r} ${r} 0 0 1 ${top.x} ${top.y}` +
+    ` A ${r} ${r} 0 0 1 ${right.x} ${right.y}`
   );
 }
 

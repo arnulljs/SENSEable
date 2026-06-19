@@ -78,9 +78,15 @@ export default function Calibration() {
   // ── Manage Formulas state ─────────────────────────────────────────────────
   const [formulas, setFormulas]           = useState(initialFormulas);
   const [assignments, setAssignments]     = useState(initAssignments);
-  const [boardExpanded, setBoardExpanded] = useState({ 'board-1': true });
-  const [editingAssign, setEditingAssign] = useState(false);
-  const [assignEdits, setAssignEdits]     = useState({});
+  // Every board reported by any ESP32 node starts expanded — computed from
+  // `devices` rather than a hardcoded board id, so this stays correct
+  // regardless of how many boards are actually connected.
+  const [boardExpanded, setBoardExpanded] = useState(() =>
+    devices.reduce((acc, d) => {
+      d.modules.forEach(m => { acc[m.id] = true; });
+      return acc;
+    }, {})
+  );
 
   // ── Helpers: Unguided ────────────────────────────────────────────────────
   function addDataPoint() {
@@ -170,22 +176,13 @@ export default function Calibration() {
   }
 
   // ── Helpers: Assignments ─────────────────────────────────────────────────
-  function startEditAssign() {
-    const flat = {};
-    Object.entries(assignments).forEach(([boardId, chs]) =>
-      Object.entries(chs).forEach(([ch, val]) => { flat[`${boardId}::${ch}`] = val ?? ''; })
-    );
-    setAssignEdits(flat); setEditingAssign(true);
-  }
-
-  function saveAssignments() {
-    const next = {};
-    Object.entries(assignEdits).forEach(([key, val]) => {
-      const [boardId, ch] = key.split('::');
-      if (!next[boardId]) next[boardId] = {};
-      next[boardId][ch] = val.trim() || null;
-    });
-    setAssignments(next); setEditingAssign(false);
+  // Assign (or clear) a formula from the bank directly onto a channel —
+  // commits immediately, no separate edit/save step.
+  function assignChannel(boardId, ch, label) {
+    setAssignments(prev => ({
+      ...prev,
+      [boardId]: { ...(prev[boardId] || {}), [ch]: label || null },
+    }));
   }
 
   // ── Derived ──────────────────────────────────────────────────────────────
@@ -479,17 +476,8 @@ export default function Calibration() {
             {/* Channel Assignments card */}
             <div className="cal-card" style={{ marginBottom: 16 }}>
               <div className="manage-header">
-                <span className="manage-title">Manage Formulas</span>
-                {!editingAssign
-                  ? <button className="edit-assign-btn" onClick={startEditAssign}>✎ Edit Assignments</button>
-                  : <div style={{ display: 'flex', gap: 6 }}>
-                      <button className="edit-assign-btn" style={{ color: 'var(--red)' }}
-                        onClick={() => setEditingAssign(false)}>Cancel</button>
-                      <button className="edit-assign-btn"
-                        style={{ background: 'var(--blue)', color: '#fff', border: 'none' }}
-                        onClick={saveAssignments}>Save</button>
-                    </div>
-                }
+                <span className="manage-title">Channel Assignments</span>
+                <span style={{ fontSize: 11, color: 'var(--text-3)' }}>from formula bank below</span>
               </div>
 
               {allBoards.map(board => (
@@ -508,16 +496,17 @@ export default function Calibration() {
                       {Object.entries(assignments[board.id] || {}).map(([ch, assigned]) => (
                         <div className="channel-row" key={ch}>
                           <span className="channel-id">Channel {ch}</span>
-                          {editingAssign
-                            ? <input className="input-field"
-                                style={{ width: 110, padding: '3px 7px', fontSize: 12 }}
-                                value={assignEdits[`${board.id}::${ch}`] ?? ''}
-                                onChange={e => setAssignEdits(p => ({ ...p, [`${board.id}::${ch}`]: e.target.value }))}
-                                placeholder="label or blank" />
-                            : <span className="channel-name">
-                                {assigned ?? <em style={{ color: 'var(--text-3)' }}>unassigned</em>}
-                              </span>
-                          }
+                          <select
+                            className="input-field"
+                            style={{ width: 150, padding: '3px 7px', fontSize: 12 }}
+                            value={assigned ?? ''}
+                            onChange={e => assignChannel(board.id, ch, e.target.value)}
+                          >
+                            <option value="">— Unassigned —</option>
+                            {formulas.map(f => (
+                              <option key={f.id} value={f.label}>{f.label}</option>
+                            ))}
+                          </select>
                         </div>
                       ))}
                     </>
@@ -551,7 +540,21 @@ export default function Calibration() {
                           <td className="formula-code">{f.formula}</td>
                           <td>
                             <button className="dp-del" title="Delete"
-                              onClick={() => setFormulas(prev => prev.filter(x => x.id !== f.id))}>
+                              onClick={() => {
+                                setFormulas(prev => prev.filter(x => x.id !== f.id));
+                                // Clear this formula from any channel it was assigned to,
+                                // so no dropdown is left pointing at a deleted formula.
+                                setAssignments(prev => {
+                                  const next = {};
+                                  Object.entries(prev).forEach(([boardId, chs]) => {
+                                    next[boardId] = {};
+                                    Object.entries(chs).forEach(([ch, label]) => {
+                                      next[boardId][ch] = label === f.label ? null : label;
+                                    });
+                                  });
+                                  return next;
+                                });
+                              }}>
                               ✕
                             </button>
                           </td>

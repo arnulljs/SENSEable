@@ -18,6 +18,15 @@ function generateHistory(base, safeMin, safeMax, count = 10) {
   });
 }
 
+// Each entry in `devices` represents one physical ESP32 node reporting in.
+// `modules` holds whatever expansion boards that node currently reports —
+// zero, one, or many. Each module's `address` is its I2C bus address on that
+// specific ESP32, which is how the backend ties a board to its parent node.
+// Nothing in the UI assumes a fixed device/module/port count — DeviceOverview
+// and Calibration both map over these arrays, so this object is the single
+// source of truth for "what hardware is currently connected." Once the real
+// backend/MQTT feed is wired up, this array gets replaced by live data with
+// the exact same shape.
 export const devices = [
   {
     id: 'n1',
@@ -54,14 +63,18 @@ export const devices = [
     ],
   },
   {
+    // No expansion board has reported in for this node yet — `modules: []`.
+    // DeviceOverview renders this as "No modules detected" instead of a
+    // sensor grid, and Calibration's board list simply has nothing to show
+    // for this device, all driven by the empty array below.
     id: 'n2',
-    name: 'ESP Module 2',
+    name: 'ESP32 Module 2',
     nodeId: 'N002',
-    status: 'offline',
+    status: 'online',
     commMode: 'Wi-Fi',
-    uptime: 0,
-    rssi: null,
-    freeHeap: null,
+    uptime: 41760,
+    rssi: -54,
+    freeHeap: 151040,
     modules: [],
   },
 ];
@@ -83,14 +96,23 @@ export const channelAssignments = {
   'board-1': { A0: 'DO', A1: 'salinity', A2: 'temperaTURE', A3: null },
 };
 
-// Sensors pre-placed on the interactive canvas (Konva Stage coords)
+// Sensors pre-placed on the interactive canvas (Konva Stage coords).
+// Only position + which physical channel they represent is stored here —
+// label, unit, and live status are resolved from `devices` above (by
+// deviceId/moduleId/portId) every time the map renders. This is what
+// makes the map "dynamic": rename a port, change its status, or remove
+// the whole board from `devices`, and every placed sensor that points at
+// it updates (or gracefully falls back) with no changes needed here.
 export const mapSensors = [
-  { id: 's1', label: 'DO',      x: 210, y: 145, deviceId: 'n1', moduleId: 'board-1', portId: 'A0', status: 'online' },
-  { id: 's2', label: 'Salinity', x: 375, y: 148, deviceId: 'n1', moduleId: 'board-1', portId: 'A1', status: 'online' },
-  { id: 's3', label: 'Temp',    x: 295, y: 265, deviceId: 'n1', moduleId: 'board-1', portId: 'A2', status: 'online' },
+  { id: 's1', x: 210, y: 145, deviceId: 'n1', moduleId: 'board-1', portId: 'A0' }, // Dissolved Oxygen
+  { id: 's2', x: 375, y: 148, deviceId: 'n1', moduleId: 'board-1', portId: 'A1' }, // Salinity
+  { id: 's3', x: 295, y: 265, deviceId: 'n1', moduleId: 'board-1', portId: 'A2' }, // Temperature
 ];
 
-// Sensor type palette for the map builder
+// Legacy generic sensor-type palette — no longer used by InteractiveMap
+// (the map now builds its placement palette live from `devices`/`mapSensors`
+// above), kept here only in case other code in the wider project still
+// imports it.
 export const sensorTypes = [
   { type: 'pH Sensor',      color: '#7C3AED' },
   { type: 'Temperature',    color: '#EA580C' },

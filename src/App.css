@@ -1,15 +1,14 @@
 /* ── SENSEful Design Tokens ─────────────────────────────────────────────── */
 :root {
-  --sidebar-bg:       #1B3461;
-  --sidebar-width:    220px;
-  --sidebar-text:     rgba(255,255,255,0.80);
-  --sidebar-active:   rgba(255,255,255,0.14);
-  --sidebar-hover:    rgba(255,255,255,0.08);
-
   --orange:           #FF6B35;
   --blue:             #2563EB;
   --blue-muted:       #EFF6FF;
   --blue-border:      #BFDBFE;
+
+  --sidebar-bg:       var(--blue);
+  --sidebar-width:    220px;
+  --sidebar-text:     rgba(255,255,255,0.80);
+  --sidebar-hover:    rgba(255,255,255,0.10);
 
   --bg:               #F0F3F8;
   --surface:          #FFFFFF;
@@ -118,7 +117,18 @@ input, select, textarea { font-family: inherit; }
   position: relative;
 }
 .sidebar-nav-item:hover { background: var(--sidebar-hover); color: #fff; }
-.sidebar-nav-item.active { background: var(--sidebar-active); color: #fff; }
+.sidebar-nav-item.active {
+  background: rgba(255,255,255,0.16);
+  color: #fff;
+}
+.sidebar-nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: -10px; top: 6px; bottom: 6px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #fff;
+}
 .sidebar-nav-item svg { width: 18px; height: 18px; opacity: 0.85; flex-shrink: 0; }
 .sidebar-nav-item.active svg { opacity: 1; }
 .notif-badge {
@@ -432,11 +442,12 @@ input, select, textarea { font-family: inherit; }
 /* ── Interactive Map ────────────────────────────────────────────────────── */
 .map-layout { display: flex; height: calc(100vh - 120px); gap: 0; }
 .map-sidebar {
-  width: 210px; flex-shrink: 0;
+  width: 300px; flex-shrink: 0; /* default — actual width is controlled inline via React state, draggable through the resize handle */
   border-right: 1px solid var(--border);
   background: var(--surface);
   padding: 16px 14px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .map-sidebar-section { margin-bottom: 18px; }
 .map-sidebar-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-3); margin-bottom: 10px; }
