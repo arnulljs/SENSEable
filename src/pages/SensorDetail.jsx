@@ -1,5 +1,32 @@
-// SensorDetail.jsx — Per-port detail view (gauge + trend + history)
+// SensorDetail.jsx — Per-port detail view (gauge + trend + history + Edit Sensor)
+import { useState } from 'react';
 import GaugeCard from '../components/GaugeCard';
+import { sensorProfiles as defaultProfiles } from '../mockData';
+
+// Saved sensor profiles persist in localStorage (same pattern as the
+// Interactive Map's named save profiles) so they survive page navigation
+// and reloads, not just the lifetime of this component. Seeded from
+// mockData's defaults the first time, then the person's own saved/edited/
+// deleted profiles take over.
+const PROFILES_KEY = 'senseful_sensor_profiles';
+
+function loadProfiles() {
+  try {
+    const raw = window.localStorage.getItem(PROFILES_KEY);
+    return raw ? JSON.parse(raw) : defaultProfiles;
+  } catch {
+    return defaultProfiles;
+  }
+}
+
+function persistProfiles(profiles) {
+  try {
+    window.localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+  } catch {
+    // Storage unavailable or full — saved profiles still work for this
+    // session, they just won't survive a reload.
+  }
+}
 
 // ── Tiny SVG line chart ──────────────────────────────────────────────────────
 function TrendChart({ history, rangeMin, rangeMax }) {
@@ -52,9 +79,204 @@ function TrendChart({ history, rangeMin, rangeMax }) {
   );
 }
 
+// ── Edit Sensor Modal ────────────────────────────────────────────────────────
+// Lets the user revise a port's configuration metadata (label/unit/range/
+// safe range) — the same fields the thesis's port-configuration workflow
+// describes as "sensor metadata and settings" — and optionally bank the
+// current values as a reusable named profile, or apply a previously saved
+// one. Telemetry fields (value/status/history) are never edited here; those
+// stay live.
+function EditSensorModal({ port, profiles, onSaveProfile, onDeleteProfile, onSave, onClose }) {
+  const [form, setForm] = useState({
+    label: port.label,
+    unit: port.unit,
+    rangeMin: String(port.rangeMin),
+    rangeMax: String(port.rangeMax),
+    safeMin: String(port.safeMin),
+    safeMax: String(port.safeMax),
+  });
+  const [selectedProfileId, setSelectedProfileId] = useState('');
+  const [newProfileName, setNewProfileName] = useState('');
+  const [error, setError] = useState('');
+  const [profileMsg, setProfileMsg] = useState('');
+
+  function setField(key, value) {
+    setForm(prev => ({ ...prev, [key]: value }));
+    setError('');
+  }
+
+  function handleApplyProfile(id) {
+    setSelectedProfileId(id);
+    if (!id) return;
+    const profile = profiles.find(p => p.id === id);
+    if (!profile) return;
+    setForm({
+      label: profile.label,
+      unit: profile.unit,
+      rangeMin: String(profile.rangeMin),
+      rangeMax: String(profile.rangeMax),
+      safeMin: String(profile.safeMin),
+      safeMax: String(profile.safeMax),
+    });
+    setError('');
+  }
+
+  // Parses + validates the form, returning either { values } or { error }.
+  function validate() {
+    const label = form.label.trim();
+    const unit = form.unit.trim();
+    const rangeMin = parseFloat(form.rangeMin);
+    const rangeMax = parseFloat(form.rangeMax);
+    const safeMin = parseFloat(form.safeMin);
+    const safeMax = parseFloat(form.safeMax);
+
+    if (!label) return { error: 'Label is required.' };
+    if (!unit) return { error: 'Unit is required.' };
+    if ([rangeMin, rangeMax, safeMin, safeMax].some(Number.isNaN)) {
+      return { error: 'Range and safe values must be numbers.' };
+    }
+    if (rangeMin >= rangeMax) return { error: 'Range min must be less than range max.' };
+    if (safeMin > safeMax) return { error: 'Safe min must not be greater than safe max.' };
+    if (safeMin < rangeMin || safeMax > rangeMax) {
+      return { error: 'Safe range must fall within the overall range.' };
+    }
+
+    return { values: { label, unit, rangeMin, rangeMax, safeMin, safeMax } };
+  }
+
+  function handleSaveAsProfile() {
+    const result = validate();
+    if (result.error) { setError(result.error); return; }
+    if (!newProfileName.trim()) { setError('Enter a name to save this profile.'); return; }
+    onSaveProfile({ name: newProfileName.trim(), ...result.values });
+    setNewProfileName('');
+    setProfileMsg(`Saved "${newProfileName.trim()}" to profiles.`);
+  }
+
+  function handleSubmit() {
+    const result = validate();
+    if (result.error) { setError(result.error); return; }
+    onSave(result.values);
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">Edit Sensor</span>
+          <button className="modal-close-btn" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+
+        <div className="modal-body">
+          {/* Load from a saved profile */}
+          <div className="form-field">
+            <label>Load from Saved Profile</label>
+            <select
+              className="input-field"
+              value={selectedProfileId}
+              onChange={e => handleApplyProfile(e.target.value)}
+            >
+              <option value="">— Select a profile —</option>
+              {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+
+          <hr className="divider" />
+
+          <div className="form-field">
+            <label>Sensor Label</label>
+            <input className="input-field" value={form.label}
+              onChange={e => setField('label', e.target.value)} placeholder="e.g. Dissolved Oxygen" />
+          </div>
+          <div className="form-field">
+            <label>Unit</label>
+            <input className="input-field" value={form.unit}
+              onChange={e => setField('unit', e.target.value)} placeholder="e.g. mg/L" />
+          </div>
+          <div className="form-field">
+            <label>Range (min – max)</label>
+            <div className="cal-row">
+              <input className="input-field" type="number" value={form.rangeMin}
+                onChange={e => setField('rangeMin', e.target.value)} placeholder="Min" />
+              <input className="input-field" type="number" value={form.rangeMax}
+                onChange={e => setField('rangeMax', e.target.value)} placeholder="Max" />
+            </div>
+          </div>
+          <div className="form-field">
+            <label>Safe Range (min – max)</label>
+            <div className="cal-row">
+              <input className="input-field" type="number" value={form.safeMin}
+                onChange={e => setField('safeMin', e.target.value)} placeholder="Min" />
+              <input className="input-field" type="number" value={form.safeMax}
+                onChange={e => setField('safeMax', e.target.value)} placeholder="Max" />
+            </div>
+          </div>
+
+          {error && <p className="modal-error">{error}</p>}
+
+          <hr className="divider" />
+
+          {/* Save current values as a new reusable profile */}
+          <div className="form-field">
+            <label>Save Current Values as Profile</label>
+            <div className="cal-row">
+              <input className="input-field" value={newProfileName}
+                onChange={e => { setNewProfileName(e.target.value); setProfileMsg(''); }}
+                placeholder="Profile name (e.g. Dissolved Oxygen mg/L)" />
+              <button className="detect-btn" onClick={handleSaveAsProfile}>Save</button>
+            </div>
+            {profileMsg && <p className="modal-success">{profileMsg}</p>}
+          </div>
+
+          {profiles.length > 0 && (
+            <div className="saved-profile-list">
+              {profiles.map(p => (
+                <div className="saved-profile-row" key={p.id}>
+                  <span>{p.name}</span>
+                  <button className="dp-del" title="Delete profile"
+                    onClick={() => onDeleteProfile(p.id)}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="modal-footer">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={handleSubmit}>Save Changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Sensor Detail Page ───────────────────────────────────────────────────────
-export default function SensorDetail({ device, module, port, onBack }) {
+export default function SensorDetail({ device, module, port, onBack, onUpdatePort }) {
   const { label, unit, value, rangeMin, rangeMax, safeMin, safeMax, status, history } = port;
+
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [profiles, setProfiles] = useState(() => loadProfiles());
+
+  function handleSaveProfile(profile) {
+    setProfiles(prev => {
+      const next = [...prev, { id: `profile-${Date.now()}`, ...profile }];
+      persistProfiles(next);
+      return next;
+    });
+  }
+
+  function handleDeleteProfile(id) {
+    setProfiles(prev => {
+      const next = prev.filter(p => p.id !== id);
+      persistProfiles(next);
+      return next;
+    });
+  }
+
+  function handleSaveSensor(values) {
+    onUpdatePort?.(values);
+    setShowEditModal(false);
+  }
 
   function handleExport() {
     const json = JSON.stringify(history, null, 2);
@@ -82,8 +304,19 @@ export default function SensorDetail({ device, module, port, onBack }) {
             </p>
           </div>
         </div>
-        <button className="edit-sensor-btn">Edit Sensor</button>
+        <button className="edit-sensor-btn" onClick={() => setShowEditModal(true)}>Edit Sensor</button>
       </div>
+
+      {showEditModal && (
+        <EditSensorModal
+          port={port}
+          profiles={profiles}
+          onSaveProfile={handleSaveProfile}
+          onDeleteProfile={handleDeleteProfile}
+          onSave={handleSaveSensor}
+          onClose={() => setShowEditModal(false)}
+        />
+      )}
 
       {/* Three-column cards row */}
       <div className="detail-cards-row">

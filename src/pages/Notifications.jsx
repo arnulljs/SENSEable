@@ -1,6 +1,6 @@
 // Notifications.jsx — System notifications list
 import { useState } from 'react';
-import { notifications as initialNotifs } from '../mockData';
+import { notifications as allNotifications } from '../mockData';
 
 const ICONS = {
   warning: '⚠️',
@@ -9,8 +9,10 @@ const ICONS = {
   fault:   '🔴',
 };
 
-export default function Notifications({ onMarkAllRead }) {
-  const [notifs, setNotifs] = useState(initialNotifs);
+// `notifications` arrives pre-filtered to the signed-in org by App.jsx,
+// with a fallback to the raw mockData import for standalone use.
+export default function Notifications({ notifications: notificationsProp, onMarkAllRead }) {
+  const [notifs, setNotifs] = useState(notificationsProp ?? allNotifications);
 
   function markAllRead() {
     setNotifs(prev => prev.map(n => ({ ...n, read: true })));

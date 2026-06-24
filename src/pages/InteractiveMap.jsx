@@ -1,7 +1,16 @@
 // InteractiveMap.jsx — Konva canvas: sensor placement + rect/circle/line drawing
+//
+// Role gating: per the thesis's role hierarchy, laying out / editing the
+// map is the one function reserved exclusively for the Designer tier.
+// Operators get the same canvas rendered read-only — they can pick which
+// of their organization's published layouts to view and double-click a
+// sensor to jump to its detail page, but every editing affordance (tools,
+// drawing, dragging, save/export/import, clear canvas) is gone entirely
+// rather than just disabled, so there's nothing to discover that wouldn't
+// work anyway.
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { Stage, Layer, Rect, Circle, Text, Group, Line } from 'react-konva';
-import { mapSensors as initialPlacements, devices } from '../mockData';
+import { mapSensors as initialPlacements, devices as defaultDevices } from '../mockData';
 
 // Status colours match the rest of the app (GaugeCard, DeviceOverview) —
 // a sensor's dot on the map uses the exact same vocabulary as its gauge.
@@ -107,13 +116,21 @@ const IconLoad = () => (
   </svg>
 );
 
-// LocalStorage key for named save profiles. Each profile is a full
-// canvas snapshot, keyed by the name the person gave it.
-const PROFILES_KEY = 'senseful_map_profiles';
+// localStorage keys for named save profiles. Namespaced per tenant so a
+// Designer's saved layouts are scoped to their own organization's "shared
+// database" of layouts (per the thesis's LAYOUTS table, tenant-scoped) —
+// switching organizations never shows another tenant's maps. A real
+// backend replaces this with GET/POST against /api/orgs/:id/layouts
+// (the LAYOUTS + LAYOUT_NODES tables) without touching anything below.
+function profilesKey(tenantId) {
+  return `senseful_map_profiles::${tenantId || 'default'}`;
+}
 
 // Sidebar width — bigger default so labels like "Dissolved Oxygen" plus
 // the board name they belong to don't get cramped, but still adjustable
-// by dragging, and remembered between visits.
+// by dragging, and remembered between visits. This is a personal UI
+// preference rather than organization data, so unlike the profiles above
+// it's intentionally *not* tenant-scoped.
 const SIDEBAR_WIDTH_KEY = 'senseful_map_sidebar_width';
 const SIDEBAR_DEFAULT_WIDTH = 300;
 const SIDEBAR_MIN_WIDTH = 220;
@@ -129,18 +146,18 @@ function loadSidebarWidth() {
   }
 }
 
-function loadProfilesFromStorage() {
+function loadProfilesFromStorage(tenantId) {
   try {
-    const raw = window.localStorage.getItem(PROFILES_KEY);
+    const raw = window.localStorage.getItem(profilesKey(tenantId));
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
   }
 }
 
-function persistProfiles(profiles) {
+function persistProfiles(tenantId, profiles) {
   try {
-    window.localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+    window.localStorage.setItem(profilesKey(tenantId), JSON.stringify(profiles));
   } catch {
     // Storage unavailable or full — the in-memory list still works for
     // this session, it just won't survive a page reload.
@@ -156,7 +173,18 @@ function channelKey(deviceId, moduleId, portId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export default function InteractiveMap() {
+export default function InteractiveMap({
+  devices: devicesProp,
+  canEdit = true,
+  onSelectSensor,
+  tenantId = 'default',
+  creatorName,
+}) {
+  // Falls back to the raw mockData import for standalone use — the same
+  // pattern used by DeviceOverview/Calibration, so all three pages stay
+  // consistent about how tenant-scoped data flows in.
+  const devices = devicesProp ?? defaultDevices;
+
   const containerRef  = useRef(null);
   const [stageSize, setStageSize] = useState({ width: 600, height: 480 });
 
@@ -272,12 +300,31 @@ export default function InteractiveMap() {
     };
   }
 
+  // Like resolveChannel, but returns the actual device/module/port
+  // objects (not just the flattened display info) so a double-click can
+  // hand them straight to onSelectSensor — the same shape App.jsx already
+  // expects from DeviceOverview's gauge cards. Returns null if the
+  // channel's source board is no longer connected, same "stale pointer,
+  // don't crash" philosophy as resolveChannel above.
+  function resolveFullChannel(key) {
+    for (const device of devices) {
+      for (const mod of device.modules) {
+        for (const port of mod.ports) {
+          if (channelKey(device.id, mod.id, port.id) === key) {
+            return { device, module: mod, port };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   // Save / Load — export to a JSON file, or save a named profile in
   // localStorage that can be reloaded later without a file dialog.
   const fileInputRef       = useRef(null);
   const statusTimeoutRef   = useRef(null);
   const [profileName, setProfileName] = useState('');
-  const [profiles, setProfiles]       = useState(() => loadProfilesFromStorage());
+  const [profiles, setProfiles]       = useState(() => loadProfilesFromStorage(tenantId));
   const [statusMsg, setStatusMsg]     = useState(null); // { text, error }
 
   // ── Measure canvas ──────────────────────────────────────────────────────
@@ -298,6 +345,7 @@ export default function InteractiveMap() {
   // ── Keyboard: Delete / Escape ────────────────────────────────────────────
   useEffect(() => {
     function onKey(e) {
+      if (!canEdit) return; // Operators: nothing on this canvas is deletable
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
         setSensors(prev => prev.filter(s => s.id !== selectedId));
         setShapes  (prev => prev.filter(s => s.id !== selectedId));
@@ -311,10 +359,11 @@ export default function InteractiveMap() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId]); // eslint-disable-line
+  }, [selectedId, canEdit]); // eslint-disable-line
 
   // ── Tool switch ──────────────────────────────────────────────────────────
   function switchTool(tool) {
+    if (!canEdit) return;
     setActiveTool(tool);
     if (tool !== 'draw') setPendingChannelKey(null);
     setSelectedId(null);
@@ -323,6 +372,7 @@ export default function InteractiveMap() {
 
   // ── Delete selected ──────────────────────────────────────────────────────
   function deleteSelected() {
+    if (!canEdit) return;
     setSensors(prev => prev.filter(s => s.id !== selectedId));
     setShapes  (prev => prev.filter(s => s.id !== selectedId));
     setSelectedId(null);
@@ -358,6 +408,7 @@ export default function InteractiveMap() {
 
   // ── Stage: mousedown — starts shape drawing ──────────────────────────────
   function handleStageMouseDown(e) {
+    if (!canEdit) return;
     if (!['rect', 'circle', 'line'].includes(activeTool)) return;
     justDrewRef.current = false;
 
@@ -444,6 +495,11 @@ export default function InteractiveMap() {
       || target.name() === 'grid-h'
       || target.name() === 'floor-plan';
 
+    if (!canEdit) {
+      if (isBg) setSelectedId(null);
+      return;
+    }
+
     // Sensor placement — allowed on background AND on top of shapes/lines
     if (activeTool === 'draw' && pendingChannelKey) {
       // Guard: the channel must still exist and not already be placed
@@ -467,11 +523,12 @@ export default function InteractiveMap() {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  const isShapeTool  = ['rect', 'circle', 'line'].includes(activeTool);
+  const isShapeTool  = canEdit && ['rect', 'circle', 'line'].includes(activeTool);
   const hasSelection = !!selectedId;
 
   // Wipe everything from the canvas
   function clearAll() {
+    if (!canEdit) return;
     setSensors([]);
     setShapes([]);
     setSelectedId(null);
@@ -491,12 +548,17 @@ export default function InteractiveMap() {
   // The full, human-readable shape of a saved map — used for both the
   // downloadable .json file and the localStorage profiles, so the two
   // stay perfectly interchangeable (export a profile, or save an
-  // imported file as a profile).
+  // imported file as a profile). `createdBy` is an addition beyond the
+  // thesis's documented LAYOUTS columns (layout_id/tenant_id/layout_name/
+  // background_data/created_at) — a reasonable extension once a real
+  // schema adds a created_by_user_id FK, kept here so Operators can see
+  // whose layout they're viewing.
   function buildSnapshot(name) {
     return {
       version: 1,
       name: name || 'Untitled Map',
       savedAt: new Date().toISOString(),
+      createdBy: creatorName || undefined,
       canvas: { width: stageSize.width, height: stageSize.height },
       sensors,
       shapes,
@@ -511,6 +573,7 @@ export default function InteractiveMap() {
 
   // Download the current canvas as a readable, re-importable .json file
   function exportTemplate() {
+    if (!canEdit) return;
     const snapshot = buildSnapshot(profileName.trim() || 'SENSEful Map');
     const json = JSON.stringify(snapshot, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -528,6 +591,7 @@ export default function InteractiveMap() {
   }
 
   function triggerImport() {
+    if (!canEdit) return;
     fileInputRef.current?.click();
   }
 
@@ -535,7 +599,7 @@ export default function InteractiveMap() {
   function handleImportFile(e) {
     const file = e.target.files?.[0];
     e.target.value = ''; // allow re-selecting the same file later
-    if (!file) return;
+    if (!file || !canEdit) return;
 
     const reader = new FileReader();
     reader.onload = () => {
@@ -555,32 +619,40 @@ export default function InteractiveMap() {
     reader.readAsText(file);
   }
 
-  // Save the current canvas as a named profile in localStorage
+  // Save the current canvas as a named profile in localStorage (Designer-
+  // only — this is what becomes the organization's "published" layout
+  // that Operators can browse and load read-only).
   function saveProfile() {
+    if (!canEdit) return;
     const name = profileName.trim();
     if (!name) { flashStatus('Enter a profile name first.', true); return; }
     const snapshot = buildSnapshot(name);
     setProfiles(prev => {
       const next = { ...prev, [name]: snapshot };
-      persistProfiles(next);
+      persistProfiles(tenantId, next);
       return next;
     });
     flashStatus(`Profile "${name}" saved.`);
   }
 
+  // Loads a saved profile onto the canvas. Used by both roles — Designers
+  // to resume editing a saved layout, Operators to view a published one
+  // (the surrounding UI is what makes it read-only for Operators, not
+  // this function).
   function loadProfile(name) {
     const snapshot = profiles[name];
     if (!snapshot) return;
     applySnapshot(snapshot);
     setProfileName(name);
-    flashStatus(`Loaded profile "${name}".`);
+    flashStatus(`Loaded "${name}".`);
   }
 
   function deleteProfile(name) {
+    if (!canEdit) return;
     setProfiles(prev => {
       const next = { ...prev };
       delete next[name];
-      persistProfiles(next);
+      persistProfiles(tenantId, next);
       return next;
     });
     flashStatus(`Deleted profile "${name}".`);
@@ -593,200 +665,270 @@ export default function InteractiveMap() {
       {/* ── Left panel ── */}
       <aside className="map-sidebar" style={{ width: sidebarWidth }}>
 
-        {/* Tools (2-column grid so all 5 fit) */}
-        <div className="map-sidebar-section">
-          <div className="map-sidebar-section-title">Tools</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-            {[
-              { key: 'select', label: 'Select',  Icon: IconSelect  },
-              { key: 'draw',   label: 'Sensor',  Icon: IconDraw    },
-              { key: 'rect',   label: 'Rect',    Icon: IconRect    },
-              { key: 'circle', label: 'Circle',  Icon: IconCircle  },
-              { key: 'line',   label: 'Line',    Icon: IconLine    },
-              { key: 'eraser', label: 'Erase',   Icon: IconErase   },
-            ].map(({ key, label, Icon }) => (
-              <button key={key}
-                className={`map-tool-btn${activeTool === key ? ' active' : ''}`}
-                onClick={() => switchTool(key)}>
-                <Icon /> {label}
-              </button>
-            ))}
-          </div>
-
-          {/* Eraser hint */}
-          {activeTool === 'eraser' && (
-            <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.4 }}>
-              Click any shape or sensor on the canvas to remove it.
-            </p>
-          )}
-
-          {/* Shape color picker */}
-          {isShapeTool && (
-            <div style={{ marginTop: 10 }}>
-              <div className="map-sidebar-section-title" style={{ marginBottom: 6 }}>Color</div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {SHAPE_COLORS.map(c => (
-                  <button key={c} onClick={() => setShapeColor(c)}
-                    style={{
-                      width: 20, height: 20, borderRadius: '50%',
-                      background: c, border: 'none', cursor: 'pointer',
-                      outline: shapeColor === c ? `2.5px solid ${c}` : 'none',
-                      outlineOffset: 2, flexShrink: 0,
-                    }} />
+        {canEdit ? (
+          <>
+            {/* Tools (2-column grid so all 6 fit) */}
+            <div className="map-sidebar-section">
+              <div className="map-sidebar-section-title">Tools</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                {[
+                  { key: 'select', label: 'Select',  Icon: IconSelect  },
+                  { key: 'draw',   label: 'Sensor',  Icon: IconDraw    },
+                  { key: 'rect',   label: 'Rect',    Icon: IconRect    },
+                  { key: 'circle', label: 'Circle',  Icon: IconCircle  },
+                  { key: 'line',   label: 'Line',    Icon: IconLine    },
+                  { key: 'eraser', label: 'Erase',   Icon: IconErase   },
+                ].map(({ key, label, Icon }) => (
+                  <button key={key}
+                    className={`map-tool-btn${activeTool === key ? ' active' : ''}`}
+                    onClick={() => switchTool(key)}>
+                    <Icon /> {label}
+                  </button>
                 ))}
               </div>
-              <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 7, lineHeight: 1.4 }}>
-                {activeTool === 'line'
-                  ? 'Click & drag on the canvas to draw a line.'
-                  : `Click & drag on the canvas to draw a ${activeTool}.`}
-              </p>
-            </div>
-          )}
 
-          {/* Sensor draw hint */}
-          {activeTool === 'draw' && (
-            <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.4 }}>
-              {pendingChannelKey
-                ? `Click canvas to place "${resolveChannel(pendingChannelKey).label}"`
-                : availableChannels.length > 0
-                  ? 'Pick a sensor below, then click the canvas.'
-                  : allChannels.length === 0
-                    ? 'No sensors are currently reporting from any connected ESP32 module.'
-                    : 'Every currently connected sensor is already placed on the map.'}
-            </p>
-          )}
-        </div>
+              {/* Eraser hint */}
+              {activeTool === 'eraser' && (
+                <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.4 }}>
+                  Click any shape or sensor on the canvas to remove it.
+                </p>
+              )}
 
-        {/* Delete selected */}
-        {hasSelection && activeTool === 'select' && (
-          <div className="map-sidebar-section">
-            <button onClick={deleteSelected}
-              style={{
-                width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                padding: '7px 10px', borderRadius: 5,
-                background: '#FEE2E2', border: '1px solid #FECACA',
-                color: '#DC2626', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
-              }}>
-              <IconTrash /> Delete Selected
-            </button>
-            <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 5, lineHeight: 1.4 }}>
-              or press{' '}
-              <kbd style={{ fontSize: 10, background: '#F3F4F6', padding: '1px 4px',
-                borderRadius: 3, border: '1px solid #D1D5DB' }}>Del</kbd>
-            </p>
-          </div>
-        )}
-
-        {/* Sensor palette (draw tool only) — live, currently-unplaced channels */}
-        {activeTool === 'draw' && (
-          <div className="map-sidebar-section">
-            <div className="map-sidebar-section-title">Sensors</div>
-            {availableChannels.length === 0 ? (
-              <p style={{ fontSize: 11, color: 'var(--text-3)', lineHeight: 1.4 }}>
-                {allChannels.length === 0
-                  ? 'No connected ESP32 module is reporting any sensors yet.'
-                  : 'All connected sensors are already placed on the map.'}
-              </p>
-            ) : (
-              <div className="sensor-palette">
-                {availableChannels.map(ch => (
-                  <div key={ch.key} className="palette-item"
-                    style={{ background: pendingChannelKey === ch.key ? '#EFF6FF' : '' }}
-                    onClick={() => setPendingChannelKey(ch.key)}>
-                    <span className="palette-dot" style={{ background: ch.color }} />
-                    {ch.label}
-                    <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-3)', flexShrink: 0 }}>
-                      {ch.moduleName}
-                    </span>
+              {/* Shape color picker */}
+              {isShapeTool && (
+                <div style={{ marginTop: 10 }}>
+                  <div className="map-sidebar-section-title" style={{ marginBottom: 6 }}>Color</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {SHAPE_COLORS.map(c => (
+                      <button key={c} onClick={() => setShapeColor(c)}
+                        style={{
+                          width: 20, height: 20, borderRadius: '50%',
+                          background: c, border: 'none', cursor: 'pointer',
+                          outline: shapeColor === c ? `2.5px solid ${c}` : 'none',
+                          outlineOffset: 2, flexShrink: 0,
+                        }} />
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Status legend — matches each sensor's live port status */}
-        <div className="map-sidebar-section">
-          <div className="map-sidebar-section-title">Status</div>
-          <div className="status-legend">
-            {Object.entries(PORT_STATUS_COLOR).map(([label, color]) => (
-              <div key={label} className="legend-item">
-                <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, display: 'inline-block' }} />
-                {label}
+                  <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 7, lineHeight: 1.4 }}>
+                    {activeTool === 'line'
+                      ? 'Click & drag on the canvas to draw a line.'
+                      : `Click & drag on the canvas to draw a ${activeTool}.`}
+                  </p>
                 </div>
-              )
+              )}
+
+              {/* Sensor draw hint */}
+              {activeTool === 'draw' && (
+                <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 8, lineHeight: 1.4 }}>
+                  {pendingChannelKey
+                    ? `Click canvas to place "${resolveChannel(pendingChannelKey).label}"`
+                    : availableChannels.length > 0
+                      ? 'Pick a sensor below, then click the canvas.'
+                      : allChannels.length === 0
+                        ? 'No sensors are currently reporting from any connected ESP32 module.'
+                        : 'Every currently connected sensor is already placed on the map.'}
+                </p>
+              )}
+            </div>
+
+            {/* Delete selected */}
+            {hasSelection && activeTool === 'select' && (
+              <div className="map-sidebar-section">
+                <button onClick={deleteSelected}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                    padding: '7px 10px', borderRadius: 5,
+                    background: '#FEE2E2', border: '1px solid #FECACA',
+                    color: '#DC2626', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+                  }}>
+                  <IconTrash /> Delete Selected
+                </button>
+                <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 5, lineHeight: 1.4 }}>
+                  or press{' '}
+                  <kbd style={{ fontSize: 10, background: '#F3F4F6', padding: '1px 4px',
+                    borderRadius: 3, border: '1px solid #D1D5DB' }}>Del</kbd>
+                </p>
+              </div>
             )}
-          </div>
-        </div>
 
-        {/* Save / Load — export & import a readable .json template, or
-            save/load a named profile from the browser's local storage */}
-        <div className="map-sidebar-section">
-          <div className="map-sidebar-section-title">Save / Load Map</div>
+            {/* Sensor palette (draw tool only) — live, currently-unplaced channels */}
+            {activeTool === 'draw' && (
+              <div className="map-sidebar-section">
+                <div className="map-sidebar-section-title">Sensors</div>
+                {availableChannels.length === 0 ? (
+                  <p style={{ fontSize: 11, color: 'var(--text-3)', lineHeight: 1.4 }}>
+                    {allChannels.length === 0
+                      ? 'No connected ESP32 module is reporting any sensors yet.'
+                      : 'All connected sensors are already placed on the map.'}
+                  </p>
+                ) : (
+                  <div className="sensor-palette">
+                    {availableChannels.map(ch => (
+                      <div key={ch.key} className="palette-item"
+                        style={{ background: pendingChannelKey === ch.key ? '#EFF6FF' : '' }}
+                        onClick={() => setPendingChannelKey(ch.key)}>
+                        <span className="palette-dot" style={{ background: ch.color }} />
+                        {ch.label}
+                        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-3)', flexShrink: 0 }}>
+                          {ch.moduleName}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
-          <input
-            className="input-field"
-            placeholder="Map name (e.g. Pond A Layout)"
-            value={profileName}
-            onChange={e => setProfileName(e.target.value)}
-            style={{ marginBottom: 8, fontSize: 12, padding: '6px 9px' }}
-          />
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
-            <button onClick={exportTemplate} style={ghostBtnStyle} title="Download as a .json file">
-              <IconDownload /> Export
-            </button>
-            <button onClick={triggerImport} style={ghostBtnStyle} title="Load a .json template from disk">
-              <IconUpload /> Import
-            </button>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json,.json"
-            onChange={handleImportFile}
-            style={{ display: 'none' }}
-          />
-
-          <button onClick={saveProfile}
-            style={{ ...ghostBtnStyle, width: '100%', background: '#2563EB', borderColor: '#2563EB', color: '#fff', marginBottom: 8 }}>
-            <IconSave /> Save as Profile
-          </button>
-
-          {Object.keys(profiles).length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 140, overflowY: 'auto' }}>
-              {Object.values(profiles)
-                .sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''))
-                .map(p => (
-                  <div key={p.name} style={profileRowStyle}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                      title={p.name}>
-                      {p.name}
-                    </span>
-                    <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
-                      <button onClick={() => loadProfile(p.name)} title="Load this profile"
-                        style={iconBtnStyle}>
-                        <IconLoad />
-                      </button>
-                      <button onClick={() => deleteProfile(p.name)} title="Delete this profile"
-                        style={{ ...iconBtnStyle, color: '#DC2626' }}>
-                        ✕
-                      </button>
+            {/* Status legend — matches each sensor's live port status */}
+            <div className="map-sidebar-section">
+              <div className="map-sidebar-section-title">Status</div>
+              <div className="status-legend">
+                {Object.entries(PORT_STATUS_COLOR).map(([label, color]) => (
+                  <div key={label} className="legend-item">
+                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, display: 'inline-block' }} />
+                    {label}
                     </div>
+                  )
+                )}
+              </div>
+            </div>
+
+            {/* Save / Load — export & import a readable .json template, or
+                save/load a named profile from the browser's local storage */}
+            <div className="map-sidebar-section">
+              <div className="map-sidebar-section-title">Save / Load Map</div>
+
+              <input
+                className="input-field"
+                placeholder="Map name (e.g. Pond A Layout)"
+                value={profileName}
+                onChange={e => setProfileName(e.target.value)}
+                style={{ marginBottom: 8, fontSize: 12, padding: '6px 9px' }}
+              />
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
+                <button onClick={exportTemplate} style={ghostBtnStyle} title="Download as a .json file">
+                  <IconDownload /> Export
+                </button>
+                <button onClick={triggerImport} style={ghostBtnStyle} title="Load a .json template from disk">
+                  <IconUpload /> Import
+                </button>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                onChange={handleImportFile}
+                style={{ display: 'none' }}
+              />
+
+              <button onClick={saveProfile}
+                style={{ ...ghostBtnStyle, width: '100%', background: '#2563EB', borderColor: '#2563EB', color: '#fff', marginBottom: 8 }}>
+                <IconSave /> Save as Profile
+              </button>
+              <p style={{ fontSize: 10, color: 'var(--text-3)', marginTop: -4, marginBottom: 8, lineHeight: 1.4 }}>
+                Saved profiles are visible to every Operator in your organization.
+              </p>
+
+              {Object.keys(profiles).length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 140, overflowY: 'auto' }}>
+                  {Object.values(profiles)
+                    .sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''))
+                    .map(p => (
+                      <div key={p.name} style={profileRowStyle}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          title={p.name}>
+                          {p.name}
+                        </span>
+                        <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+                          <button onClick={() => loadProfile(p.name)} title="Load this profile"
+                            style={iconBtnStyle}>
+                            <IconLoad />
+                          </button>
+                          <button onClick={() => deleteProfile(p.name)} title="Delete this profile"
+                            style={{ ...iconBtnStyle, color: '#DC2626' }}>
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+
+              {statusMsg && (
+                <p style={{
+                  fontSize: 11, marginTop: 8, lineHeight: 1.4,
+                  color: statusMsg.error ? '#DC2626' : '#16A34A',
+                }}>
+                  {statusMsg.error ? '⚠ ' : '✓ '}{statusMsg.text}
+                </p>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            {/* ── Operator: read-only view ── */}
+            <div className="map-sidebar-section">
+              <div className="map-sidebar-section-title">Layout</div>
+              <p style={{ fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.5 }}>
+                Read-only view. Only your organization&rsquo;s Designer can create
+                or edit map layouts. Double-click a sensor to open its details.
+              </p>
+            </div>
+
+            <div className="map-sidebar-section">
+              <div className="map-sidebar-section-title">Published Layouts</div>
+              {Object.keys(profiles).length === 0 ? (
+                <p style={{ fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.5 }}>
+                  Your Designer hasn&rsquo;t published a layout yet.
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {Object.values(profiles)
+                    .sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''))
+                    .map(p => (
+                      <button key={p.name} onClick={() => loadProfile(p.name)}
+                        style={{
+                          ...ghostBtnStyle, width: '100%', justifyContent: 'space-between',
+                          flexDirection: 'column', alignItems: 'flex-start', gap: 1, padding: '8px 10px',
+                          background: profileName === p.name ? '#EFF6FF' : '#fff',
+                          borderColor: profileName === p.name ? '#BFDBFE' : '#E5E7EB',
+                        }}>
+                        <span style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</span>
+                          <IconLoad />
+                        </span>
+                        {p.createdBy && (
+                          <span style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 400 }}>by {p.createdBy}</span>
+                        )}
+                      </button>
+                    ))}
+                </div>
+              )}
+              {statusMsg && (
+                <p style={{
+                  fontSize: 11, marginTop: 8, lineHeight: 1.4,
+                  color: statusMsg.error ? '#DC2626' : '#16A34A',
+                }}>
+                  {statusMsg.error ? '⚠ ' : '✓ '}{statusMsg.text}
+                </p>
+              )}
+            </div>
+
+            {/* Status legend — still useful read-only context */}
+            <div className="map-sidebar-section">
+              <div className="map-sidebar-section-title">Status</div>
+              <div className="status-legend">
+                {Object.entries(PORT_STATUS_COLOR).map(([label, color]) => (
+                  <div key={label} className="legend-item">
+                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, display: 'inline-block' }} />
+                    {label}
                   </div>
                 ))}
+              </div>
             </div>
-          )}
-
-          {statusMsg && (
-            <p style={{
-              fontSize: 11, marginTop: 8, lineHeight: 1.4,
-              color: statusMsg.error ? '#DC2626' : '#16A34A',
-            }}>
-              {statusMsg.error ? '⚠ ' : '✓ '}{statusMsg.text}
-            </p>
-          )}
-        </div>
+          </>
+        )}
       </aside>
 
       {/* ── Drag handle to resize the sidebar ── */}
@@ -807,31 +949,48 @@ export default function InteractiveMap() {
       <div ref={containerRef} className="map-canvas-area"
         style={{
           position: 'relative',
-          cursor: isShapeTool || activeTool === 'eraser' ? 'crosshair' : 'default',
+          cursor: isShapeTool || (canEdit && activeTool === 'eraser') ? 'crosshair' : 'default',
         }}>
 
-        {/* Clear Canvas button — top-right overlay */}
-        <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 10, display: 'flex', gap: 8 }}>
-          <button
-            onClick={clearAll}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 5,
-              padding: '6px 12px',
-              background: 'rgba(255,255,255,0.92)',
-              border: '1px solid #E5E7EB',
-              borderRadius: 6,
-              fontSize: 12, fontWeight: 600, color: '#6B7280',
-              cursor: 'pointer',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.10)',
-              backdropFilter: 'blur(4px)',
-              transition: 'background 0.12s, color 0.12s',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.background = '#FEE2E2'; e.currentTarget.style.color = '#DC2626'; e.currentTarget.style.borderColor = '#FECACA'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.92)'; e.currentTarget.style.color = '#6B7280'; e.currentTarget.style.borderColor = '#E5E7EB'; }}
-          >
-            <IconTrash /> Clear Canvas
-          </button>
-        </div>
+        {/* Read-only badge — Operator view */}
+        {!canEdit && (
+          <div style={{
+            position: 'absolute', top: 10, left: 10, zIndex: 10,
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '5px 11px', background: 'rgba(255,255,255,0.92)',
+            border: '1px solid #E5E7EB', borderRadius: 20,
+            fontSize: 11.5, fontWeight: 600, color: '#6B7280',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.10)', backdropFilter: 'blur(4px)',
+          }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#9CA3AF', display: 'inline-block' }} />
+            Read-only
+          </div>
+        )}
+
+        {/* Clear Canvas button — top-right overlay (Designer only) */}
+        {canEdit && (
+          <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 10, display: 'flex', gap: 8 }}>
+            <button
+              onClick={clearAll}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '6px 12px',
+                background: 'rgba(255,255,255,0.92)',
+                border: '1px solid #E5E7EB',
+                borderRadius: 6,
+                fontSize: 12, fontWeight: 600, color: '#6B7280',
+                cursor: 'pointer',
+                boxShadow: '0 1px 4px rgba(0,0,0,0.10)',
+                backdropFilter: 'blur(4px)',
+                transition: 'background 0.12s, color 0.12s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#FEE2E2'; e.currentTarget.style.color = '#DC2626'; e.currentTarget.style.borderColor = '#FECACA'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.92)'; e.currentTarget.style.color = '#6B7280'; e.currentTarget.style.borderColor = '#E5E7EB'; }}
+            >
+              <IconTrash /> Clear Canvas
+            </button>
+          </div>
+        )}
         <Stage
           width={stageSize.width}
           height={stageSize.height}
@@ -868,11 +1027,12 @@ export default function InteractiveMap() {
             {/* ── Drawn shapes ── */}
             {shapes.map(shape => {
               const sel       = selectedId === shape.id;
-              const draggable = activeTool === 'select';
+              const draggable = canEdit && activeTool === 'select';
 
               // Shared click handler: erase in eraser mode, select in select mode,
               // and in draw mode let the click pass through to the stage.
               const onShapeClick = e => {
+                if (!canEdit) { e.cancelBubble = true; setSelectedId(shape.id); return; }
                 if (activeTool === 'draw') return; // bubble up → stage places sensor
                 e.cancelBubble = true;
                 if (activeTool === 'eraser') {
@@ -963,16 +1123,30 @@ export default function InteractiveMap() {
                 <Group
                   key={sensor.id}
                   x={sensor.x} y={sensor.y}
-                  draggable={activeTool === 'select'}
+                  draggable={canEdit && activeTool === 'select'}
                   onDragEnd={e => handleSensorDragEnd(sensor.id, e)}
                   onClick={e => {
                     e.cancelBubble = true;
+                    if (!canEdit) { setSelectedId(sensor.id); return; }
                     if (activeTool === 'eraser') {
                       setSensors(prev => prev.filter(s => s.id !== sensor.id));
                       if (selectedId === sensor.id) setSelectedId(null);
                     } else if (activeTool === 'select') {
                       setSelectedId(sensor.id);
                     }
+                  }}
+                  onDblClick={e => {
+                    // Available to both roles — this is the Operator's
+                    // primary way to act on the map: jump straight to the
+                    // sensor's full detail page instead of just viewing
+                    // its dot on the layout.
+                    e.cancelBubble = true;
+                    const full = resolveFullChannel(sensor.channelKey);
+                    if (!full) {
+                      flashStatus('This sensor\u2019s source board is no longer connected.', true);
+                      return;
+                    }
+                    onSelectSensor?.(full.device, full.module, full.port);
                   }}
                 >
                   {isSelected && (

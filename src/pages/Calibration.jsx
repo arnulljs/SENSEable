@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { devices, savedFormulas as initialFormulas, channelAssignments as initAssignments } from '../mockData';
+import { devices as allDevices, savedFormulas as initialFormulas, channelAssignments as initAssignments } from '../mockData';
 
 // ── simple linear regression helper ──────────────────────────────────────────
 function linearRegression(points) {
@@ -47,7 +47,15 @@ const IconMap = () => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-export default function Calibration() {
+// `devices` arrives as a prop now — already filtered down to the signed-in
+// user's organization by App.jsx — with a fallback to the raw mockData
+// import for standalone use. Everything below this line is unchanged: the
+// "hard rule" that this page only ever derives its board/channel list from
+// whatever `devices` it's handed is exactly what makes tenant-scoping a
+// one-line change here.
+export default function Calibration({ devices: devicesProp }) {
+  const devices = devicesProp ?? allDevices;
+
   // ── Calibration Module state ──────────────────────────────────────────────
   const [ready, setReady]           = useState(false);
   const [serialPort, setSerialPort] = useState('');

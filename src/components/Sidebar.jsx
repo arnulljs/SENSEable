@@ -1,4 +1,5 @@
 // Sidebar.jsx — SENSEful left navigation panel
+import { useAuth } from '../context/AuthContext';
 
 const IconHome = () => (
   <svg viewBox="0 0 20 20" fill="currentColor">
@@ -18,6 +19,13 @@ const IconWrench = () => (
   </svg>
 );
 
+const IconTeam = () => (
+  <svg viewBox="0 0 20 20" fill="currentColor">
+    <path d="M7 9a3 3 0 100-6 3 3 0 000 6zM3 16.5c0-2.49 2.015-4.5 4.5-4.5h1c2.485 0 4.5 2.01 4.5 4.5v.25a.25.25 0 01-.25.25H3.25a.25.25 0 01-.25-.25v-.25z" />
+    <path d="M13.5 9.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM12.3 12.06A4.49 4.49 0 0116 16.25v.5a.25.25 0 01-.25.25H14v-.5c0-1.6-.66-3.04-1.7-4.06z" opacity="0.75" />
+  </svg>
+);
+
 // The SENSEful logo globe/sensor icon (simplified)
 const IconSensor = () => (
   <svg viewBox="0 0 20 20" fill="white">
@@ -27,13 +35,31 @@ const IconSensor = () => (
   </svg>
 );
 
+const IconLogout = () => (
+  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M7.5 17.5H5a1.5 1.5 0 01-1.5-1.5v-12A1.5 1.5 0 015 2.5h2.5M13 14l4-4-4-4M17 10H7.5" />
+  </svg>
+);
+
+function initials(name) {
+  return (name || '')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(p => p[0].toUpperCase())
+    .join('');
+}
+
 const NAV_ITEMS = [
-  { id: 'home',          label: 'Home',        Icon: IconHome    },
-  { id: 'notifications', label: 'Notifications', Icon: IconBell   },
-  { id: 'calibration',  label: 'Calibration', Icon: IconWrench  },
+  { id: 'home',          label: 'Home',          Icon: IconHome    },
+  { id: 'notifications', label: 'Notifications', Icon: IconBell    },
+  { id: 'calibration',   label: 'Calibration',   Icon: IconWrench  },
+  { id: 'team',          label: 'Team',          Icon: IconTeam    },
 ];
 
 export default function Sidebar({ currentPage, onNavigate, unreadCount }) {
+  const { currentUser, currentOrg, role, logout } = useAuth();
+
   return (
     <aside className="sidebar">
       {/* Brand */}
@@ -60,6 +86,23 @@ export default function Sidebar({ currentPage, onNavigate, unreadCount }) {
           </button>
         ))}
       </nav>
+
+      {/* User / organization footer */}
+      <div className="sidebar-footer">
+        <div className="sidebar-user-row">
+          <span className="sidebar-avatar">{initials(currentUser?.fullName)}</span>
+          <div className="sidebar-user-info">
+            <div className="sidebar-user-name">{currentUser?.fullName}</div>
+            <div className="sidebar-user-org">{currentOrg?.name}</div>
+          </div>
+        </div>
+        <div className="sidebar-role-row">
+          <span className={`role-badge ${role?.id}`}>{role?.name}</span>
+          <button className="sidebar-logout-btn" onClick={logout} title="Log out">
+            <IconLogout />
+          </button>
+        </div>
+      </div>
     </aside>
   );
 }

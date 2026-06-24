@@ -1,7 +1,26 @@
 // ─── SENSEful Mock Data ────────────────────────────────────────────────────
 // No database or MQTT connected yet — all data is in-memory for UI prototyping.
 
-function generateHistory(base, safeMin, safeMax, count = 10) {
+// A port's status is always derived from its current reading relative to
+// its own range/safe thresholds — never stored as independent truth. This
+// is the single function that decides Normal/Warning/Fault for a reading,
+// used both when seeding mock data below and whenever Edit Sensor changes
+// a port's range or safe thresholds (see App.jsx's updatePort), so the
+// status badge can never go stale relative to the configured parameters.
+//   • Outside the physical range entirely → Fault (the reading itself is
+//     no longer plausible for this sensor).
+//   • Inside range but outside the safe band → Warning.
+//   • Inside the safe band → Normal.
+// ('Offline' is handled separately — it only applies when a port's parent
+// board/node has dropped out of `devices` entirely, e.g. in InteractiveMap's
+// resolveChannel fallback — not something derived from a value.)
+export function computeSensorStatus(value, rangeMin, rangeMax, safeMin, safeMax) {
+  if (value < rangeMin || value > rangeMax) return 'Fault';
+  if (value < safeMin || value > safeMax) return 'Warning';
+  return 'Normal';
+}
+
+function generateHistory(base, rangeMin, rangeMax, safeMin, safeMax, count = 10) {
   const now = Date.now();
   return Array.from({ length: count }, (_, i) => {
     const noise = (Math.random() - 0.5) * (safeMax - safeMin) * 0.14;
@@ -13,10 +32,116 @@ function generateHistory(base, safeMin, safeMax, count = 10) {
         hour: 'numeric', minute: '2-digit', hour12: true,
       }),
       value: v,
-      status: 'Normal',
+      status: computeSensorStatus(v, rangeMin, rangeMax, safeMin, safeMax),
     };
   });
 }
+
+// ─── Tenant & Access layer ──────────────────────────────────────────────────
+// Mirrors the thesis's "Tenant and Access ERD" (Appendix I.2): TENANTS,
+// ROLES, and USERS tables. This is the multi-tenant SaaS foundation —
+// everything else in this file (devices, notifications, ...) is scoped to
+// one of these organizations via a `tenantId` field. There's no backend
+// yet, so AuthContext.jsx seeds itself from these arrays once and then
+// reads/writes a localStorage mirror for the rest of the session. Swapping
+// in a real API later means replacing that seed + persistence logic in
+// AuthContext — nothing in the page components needs to change, since they
+// already only ever see whatever `devices`/`notifications` they're handed
+// as props.
+//
+// Per the thesis's three-tier role hierarchy, Tier 1 (Service Provider) is
+// out of scope for this application — that's SENSEful's own staff tooling.
+// What's modeled here is Tier 2 (Designer / Client Admin) and Tier 3
+// (Operator), scoped within each tenant.
+
+// → roles.role_id / role_name / description
+export const roles = [
+  {
+    id: 'designer',
+    name: 'Designer',
+    tier: 2,
+    description:
+      'Client admin. Full operational access, plus the only role that can create, lay out, and edit interactive map designs for the organization.',
+  },
+  {
+    id: 'operator',
+    name: 'Operator',
+    tier: 3,
+    description:
+      'Operational access — calibration, sensor metadata, actuator control. Views interactive map designs read-only.',
+  },
+];
+
+// → tenants.tenant_id / name / status / created_at
+// `orgCode` and `maxUsers` aren't in the documented ERD's TENANTS columns —
+// they're prototype-only conveniences (a join code for the signup flow, and
+// a stand-in for the proposed TENANT_LIMITS.max_users row) kept here rather
+// than invented ad hoc in AuthContext.
+export const organizations = [
+  {
+    id: 'tnt_aquatech',
+    name: 'AquaTech Hatchery Corp',
+    slug: 'aquatech',
+    orgCode: 'AQUA-7421',
+    status: 'active',
+    plan: 'Pilot',
+    maxUsers: 6,
+    createdAt: '2026-02-03T08:00:00.000Z',
+  },
+  {
+    // Deliberately has zero devices below — same proof-of-dynamism idea as
+    // ESP32 Module 2's `modules: []`, just one level up: a whole tenant
+    // with no hardware registered yet, so the UI's empty states get
+    // exercised at the organization level too, not just the device level.
+    id: 'tnt_llba',
+    name: 'Lapu-Lapu Bay Aquafarms',
+    slug: 'llba',
+    orgCode: 'LLBA-3309',
+    status: 'active',
+    plan: 'Pilot',
+    maxUsers: 4,
+    createdAt: '2026-04-11T08:00:00.000Z',
+  },
+];
+
+// → users.user_id / tenant_id / role_id / full_name / email / password_hash /
+//   status / created_at
+// `password` is plaintext here ONLY because this is a frontend-only
+// prototype with nowhere to hash it. A real backend stores `password_hash`
+// and verifies it server-side — the client should never hold or compare
+// raw passwords the way AuthContext currently has to.
+export const users = [
+  {
+    id: 'usr_mariz',
+    tenantId: 'tnt_aquatech',
+    roleId: 'designer',
+    fullName: 'Mariz Santos',
+    email: 'mariz@aquatech.ph',
+    password: 'designer123',
+    status: 'active',
+    createdAt: '2026-02-03T08:05:00.000Z',
+  },
+  {
+    id: 'usr_jay',
+    tenantId: 'tnt_aquatech',
+    roleId: 'operator',
+    fullName: 'Jay Bautista',
+    email: 'jay@aquatech.ph',
+    password: 'operator123',
+    status: 'active',
+    createdAt: '2026-02-10T09:00:00.000Z',
+  },
+  {
+    id: 'usr_dane',
+    tenantId: 'tnt_llba',
+    roleId: 'designer',
+    fullName: 'Dane Lim',
+    email: 'dane@llba.ph',
+    password: 'designer123',
+    status: 'active',
+    createdAt: '2026-04-11T08:10:00.000Z',
+  },
+];
 
 // Each entry in `devices` represents one physical ESP32 node reporting in.
 // `modules` holds whatever expansion boards that node currently reports —
@@ -27,9 +152,15 @@ function generateHistory(base, safeMin, safeMax, count = 10) {
 // source of truth for "what hardware is currently connected." Once the real
 // backend/MQTT feed is wired up, this array gets replaced by live data with
 // the exact same shape.
+//
+// `tenantId` (→ devices.tenant_id in the "Devices and Sensing ERD") is the
+// multi-tenant foundation: App.jsx filters this array down to the signed-in
+// user's organization before handing it to any page, so a Designer or
+// Operator only ever sees their own org's hardware.
 export const devices = [
   {
     id: 'n1',
+    tenantId: 'tnt_aquatech',
     name: 'ESP32 Module 1',
     nodeId: 'N001',
     status: 'online',       // online | warning | fault | offline
@@ -46,17 +177,20 @@ export const devices = [
           {
             id: 'A0', label: 'Dissolved Oxygen', unit: 'mg/L',
             value: 8.19, rangeMin: 0, rangeMax: 20, safeMin: 6, safeMax: 9,
-            status: 'Normal', history: generateHistory(8.19, 6, 9),
+            status: computeSensorStatus(8.19, 0, 20, 6, 9),
+            history: generateHistory(8.19, 0, 20, 6, 9),
           },
           {
             id: 'A1', label: 'Salinity', unit: 'PSU',
             value: 44.97, rangeMin: 0, rangeMax: 70, safeMin: 35, safeMax: 50,
-            status: 'Normal', history: generateHistory(44.97, 35, 50),
+            status: computeSensorStatus(44.97, 0, 70, 35, 50),
+            history: generateHistory(44.97, 0, 70, 35, 50),
           },
           {
             id: 'A2', label: 'Temperature', unit: '°C',
             value: 29.62, rangeMin: 0, rangeMax: 50, safeMin: 25, safeMax: 32,
-            status: 'Normal', history: generateHistory(29.62, 25, 32),
+            status: computeSensorStatus(29.62, 0, 50, 25, 32),
+            history: generateHistory(29.62, 0, 50, 25, 32),
           },
         ],
       },
@@ -68,6 +202,7 @@ export const devices = [
     // sensor grid, and Calibration's board list simply has nothing to show
     // for this device, all driven by the empty array below.
     id: 'n2',
+    tenantId: 'tnt_aquatech',
     name: 'ESP32 Module 2',
     nodeId: 'N002',
     status: 'online',
@@ -79,11 +214,15 @@ export const devices = [
   },
 ];
 
+// `tenantId` here mirrors the same scoping idea — a real backend would
+// store notifications per-tenant from the start (tied to whichever
+// device/module/port triggered them), this is just the mock-data version
+// of that same column.
 export const notifications = [
-  { id: 1, type: 'warning', title: 'Dissolved Oxygen Low', message: 'Port A0 on Expansion Board 1 (ESP32 Module 1) is approaching the lower safe threshold.', time: '2 min ago', read: false },
-  { id: 2, type: 'info',    title: 'Device Connected',    message: 'ESP32 Module 1 connected via Wi-Fi at −61 dBm.', time: '1 hr ago', read: false },
-  { id: 3, type: 'success', title: 'Calibration Saved',   message: 'Formula for Dissolved Oxygen (DO) has been saved successfully.', time: '3 hr ago', read: true },
-  { id: 4, type: 'fault',   title: 'Sensor Port Fault',   message: 'Port A3 on Expansion Board 1 reports no valid response. Check wiring.', time: 'Yesterday', read: true },
+  { id: 1, tenantId: 'tnt_aquatech', type: 'warning', title: 'Dissolved Oxygen Low', message: 'Port A0 on Expansion Board 1 (ESP32 Module 1) is approaching the lower safe threshold.', time: '2 min ago', read: false },
+  { id: 2, tenantId: 'tnt_aquatech', type: 'info',    title: 'Device Connected',    message: 'ESP32 Module 1 connected via Wi-Fi at −61 dBm.', time: '1 hr ago', read: false },
+  { id: 3, tenantId: 'tnt_aquatech', type: 'success', title: 'Calibration Saved',   message: 'Formula for Dissolved Oxygen (DO) has been saved successfully.', time: '3 hr ago', read: true },
+  { id: 4, tenantId: 'tnt_aquatech', type: 'fault',   title: 'Sensor Port Fault',   message: 'Port A3 on Expansion Board 1 reports no valid response. Check wiring.', time: 'Yesterday', read: true },
 ];
 
 export const savedFormulas = [
@@ -95,6 +234,19 @@ export const savedFormulas = [
 export const channelAssignments = {
   'board-1': { A0: 'DO', A1: 'salinity', A2: 'temperaTURE', A3: null },
 };
+
+// Saved sensor profiles — reusable metadata templates (label, unit, range,
+// safe range) for the Edit Sensor feature. Letting a user pick "Dissolved
+// Oxygen (mg/L)" from a dropdown instead of re-typing the same six fields
+// every time the same physical sensor model gets wired to a new port is
+// exactly the "reuse of saved sensor profiles" behavior called out in the
+// thesis's port-configuration workflow (Appendix J discovery flowchart).
+// Mirrors the calibration formula bank's save-once/reuse-anywhere pattern.
+export const sensorProfiles = [
+  { id: 'profile-1', name: 'Dissolved Oxygen (mg/L)', label: 'Dissolved Oxygen', unit: 'mg/L', rangeMin: 0, rangeMax: 20, safeMin: 6, safeMax: 9 },
+  { id: 'profile-2', name: 'Salinity (PSU)',           label: 'Salinity',        unit: 'PSU',  rangeMin: 0, rangeMax: 70, safeMin: 35, safeMax: 50 },
+  { id: 'profile-3', name: 'Temperature (°C)',         label: 'Temperature',     unit: '°C',   rangeMin: 0, rangeMax: 50, safeMin: 25, safeMax: 32 },
+];
 
 // Sensors pre-placed on the interactive canvas (Konva Stage coords).
 // Only position + which physical channel they represent is stored here —

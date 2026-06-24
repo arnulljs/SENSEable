@@ -1,6 +1,6 @@
 // DeviceOverview.jsx — Home page: device cards + tab to Interactive Map
 import { useState } from 'react';
-import { devices } from '../mockData';
+import { devices as allDevices } from '../mockData';
 import GaugeCard from '../components/GaugeCard';
 import InteractiveMap from './InteractiveMap';
 
@@ -21,7 +21,18 @@ const IconChevron = ({ open }) => (
   </svg>
 );
 
-export default function DeviceOverview({ onSelectSensor }) {
+// `devices` arrives as a prop now — already filtered down to the signed-in
+// user's organization by App.jsx — but falls back to the raw mockData
+// import so this component still works standalone (e.g. if it's ever
+// rendered outside the authenticated shell, or during local dev/testing).
+export default function DeviceOverview({
+  devices: devicesProp,
+  onSelectSensor,
+  canEditMap = true,
+  tenantId,
+  creatorName,
+}) {
+  const devices = devicesProp ?? allDevices;
   const [activeTab, setActiveTab] = useState('overview');
 
   // Track which device/module sections are collapsed.
@@ -76,59 +87,71 @@ export default function DeviceOverview({ onSelectSensor }) {
       {/* Tab content */}
       {activeTab === 'overview' ? (
         <div className="page-body">
-          <div className="device-list">
-            {devices.map(device => (
-              <div key={device.id} className="device-card">
-                {/* Device header */}
-                <div className="device-card-header" onClick={() => toggleDevice(device.id)}>
-                  <span className={`status-dot ${device.status}`} />
-                  <span className="device-name">{device.name}</span>
-                  <span className="device-meta">
-                    {device.commMode}
-                    {device.rssi && <span>· {device.rssi} dBm</span>}
-                  </span>
-                  <IconChevron open={expandedDevices[device.id]} />
-                </div>
+          {devices.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 60, color: 'var(--text-3)' }}>
+              No ESP32 modules have been registered for this organization yet.
+            </div>
+          ) : (
+            <div className="device-list">
+              {devices.map(device => (
+                <div key={device.id} className="device-card">
+                  {/* Device header */}
+                  <div className="device-card-header" onClick={() => toggleDevice(device.id)}>
+                    <span className={`status-dot ${device.status}`} />
+                    <span className="device-name">{device.name}</span>
+                    <span className="device-meta">
+                      {device.commMode}
+                      {device.rssi && <span>· {device.rssi} dBm</span>}
+                    </span>
+                    <IconChevron open={expandedDevices[device.id]} />
+                  </div>
 
-                {/* Device body (expanded) */}
-                {expandedDevices[device.id] && (
-                  device.modules.length === 0 ? (
-                    <div className="device-offline-msg">
-                      <span className={`status-dot ${device.status}`} />
-                      Device is {device.status}. No modules detected.
-                    </div>
-                  ) : (
-                    device.modules.map(mod => (
-                      <div key={mod.id} className="module-section">
-                        {/* Module header */}
-                        <div className="module-header" onClick={() => toggleModule(mod.id)}>
-                          <span className="module-name">{mod.name}</span>
-                          <span className="module-address">{mod.address}</span>
-                          <IconChevron open={expandedModules[mod.id]} />
-                        </div>
-
-                        {/* Sensor gauge grid */}
-                        {expandedModules[mod.id] && (
-                          <div className="sensor-grid">
-                            {mod.ports.map(port => (
-                              <GaugeCard
-                                key={port.id}
-                                port={port}
-                                onClick={() => onSelectSensor(device, mod, port)}
-                              />
-                            ))}
-                          </div>
-                        )}
+                  {/* Device body (expanded) */}
+                  {expandedDevices[device.id] && (
+                    device.modules.length === 0 ? (
+                      <div className="device-offline-msg">
+                        <span className={`status-dot ${device.status}`} />
+                        Device is {device.status}. No modules detected.
                       </div>
-                    ))
-                  )
-                )}
-              </div>
-            ))}
-          </div>
+                    ) : (
+                      device.modules.map(mod => (
+                        <div key={mod.id} className="module-section">
+                          {/* Module header */}
+                          <div className="module-header" onClick={() => toggleModule(mod.id)}>
+                            <span className="module-name">{mod.name}</span>
+                            <span className="module-address">{mod.address}</span>
+                            <IconChevron open={expandedModules[mod.id]} />
+                          </div>
+
+                          {/* Sensor gauge grid */}
+                          {expandedModules[mod.id] && (
+                            <div className="sensor-grid">
+                              {mod.ports.map(port => (
+                                <GaugeCard
+                                  key={port.id}
+                                  port={port}
+                                  onClick={() => onSelectSensor(device, mod, port)}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
-        <InteractiveMap />
+        <InteractiveMap
+          devices={devices}
+          canEdit={canEditMap}
+          onSelectSensor={onSelectSensor}
+          tenantId={tenantId}
+          creatorName={creatorName}
+        />
       )}
     </div>
   );
