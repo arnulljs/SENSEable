@@ -21,7 +21,7 @@ export default function AuthBrandPanel() {
     <div className="auth-brand-panel">
       <div className="auth-brand-mark">
         <IconSensorMark />
-        <span className="auth-brand-word">SENSEful</span>
+        <span className="auth-brand-word">SENSEable</span>
       </div>
 
       <p className="auth-brand-tagline">

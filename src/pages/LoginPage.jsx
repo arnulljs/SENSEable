@@ -61,7 +61,7 @@ export default function LoginPage({ onSwitchToSignup }) {
               <input
                 id="login-pw"
                 className="input-field" type={showPw ? 'text' : 'password'} autoComplete="current-password"
-                placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+                placeholder="••••••••"
                 value={password} onChange={e => setPassword(e.target.value)} required
               />
               <button type="button" className="auth-pw-toggle" onClick={() => setShowPw(s => !s)}>

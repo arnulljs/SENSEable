@@ -101,7 +101,7 @@ export default function Team() {
           {created && (
             <div className="auth-success" style={{ marginTop: 14 }}>
               <strong>{created.user.fullName}</strong> can sign in with <code>{created.user.email}</code> and the
-              temporary password <code>{created.tempPassword}</code>. Share this with them directly \u2014 there&rsquo;s
+              temporary password <code>{created.tempPassword}</code>. Share this with them directly — there&rsquo;s
               no email delivery in this prototype, so this is the only time it&rsquo;s shown.
             </div>
           )}
