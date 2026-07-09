@@ -20,6 +20,73 @@ export function computeSensorStatus(value, rangeMin, rangeMax, safeMin, safeMax)
   return 'Normal';
 }
 
+// ─── Actuator command builder ───────────────────────────────────────────────
+// Actuation is deliberately a SEPARATE concern from sensing. Actuators live on
+// the ESP32 mainboard's PWM-capable GPIO (LEDC peripheral), NOT on the modular
+// I²C sensing path — so in the data model they hang off the *device*, parallel
+// to `modules`, never inside one.
+//
+// This is the pure, side-effect-free builder for the downlink command payload,
+// matching the `CommandPayload` JSON Schema (Branch B: "actuate") from the
+// firmware progress spec. It's the exact wire shape the backend/MQTT path will
+// eventually publish to `usc/thesis/{tid}/{nid}/cmd`; the Control page only
+// calls this + hands the result to App, so once a real broker is wired up
+// nothing in the page changes.
+//
+// The command is FLAT (no nested act/out/safe wrappers) and discriminated by
+// `action`. For actuation:
+//   action : "actuate"
+//   port   : "OUT1".."OUT16"   — logical output port (regex-enforced upstream)
+//   mode   : "bin" | "pwm"     — note the literal is "bin", not "binary"
+//   dur    : integer ≥ 0       — ALWAYS required (0 = hold until next command)
+//   state  : 0 | 1             — required for bin
+//   duty   : integer 0..255    — required for pwm (8-bit LEDC resolution)
+//
+// UI/state convention note: the Control page works in operator-friendly PERCENT
+// (0–100%) for duty; this builder converts to the wire's 0–255 at the boundary.
+// For pwm, an OFF command is expressed as duty 0 (the slider's set % is kept in
+// UI state and re-applied on the next ON). Routing uses `device.nodeId` (e.g.
+// "N001"), which is what the firmware/topic address by — NOT the internal `id`.
+export function clampDuty(pct) {
+  const n = Math.round(Number(pct));
+  if (Number.isNaN(n)) return 0;
+  return Math.min(100, Math.max(0, n));
+}
+
+// Operator percent (0–100) → wire duty (0–255, 8-bit).
+export function dutyPctToRaw(pct) {
+  return Math.round((clampDuty(pct) / 100) * 255);
+}
+
+let _cmdSeq = 0;
+export function buildActuatorCommand(device, actuator, out = {}) {
+  const mode = (out.mode === 'binary' || out.mode === 'bin') ? 'bin' : 'pwm';
+  const dur = Math.max(0, Math.round(Number(out.dur) || 0));
+  const on = out.state ? 1 : 0;
+
+  _cmdSeq += 1;
+  const cmd = {
+    t: 'cmd',
+    v: 1,
+    tid: device.tenantId,          // tenant scope (align with topic tenant segment)
+    nid: device.nodeId,            // route by node id (matches firmware, e.g. "N001")
+    cid: 'c' + String(_cmdSeq).padStart(4, '0'),
+    ts: Math.floor(Date.now() / 1000),
+    action: 'actuate',
+    port: actuator.port,           // "OUT1".."OUT16"
+    mode,
+    dur,
+  };
+
+  if (mode === 'bin') {
+    cmd.state = on;                // binary carries explicit on/off
+  } else {
+    cmd.duty = on ? dutyPctToRaw(out.duty) : 0; // pwm off ⇒ duty 0
+  }
+
+  return cmd;
+}
+
 function generateHistory(base, rangeMin, rangeMax, safeMin, safeMax, count = 10) {
   const now = Date.now();
   return Array.from({ length: count }, (_, i) => {
@@ -195,6 +262,23 @@ export const devices = [
         ],
       },
     ],
+    // Actuators hang off the *device*, not `modules` — they're wired to the
+    // ESP32 mainboard's PWM-capable GPIO (LEDC), separate from the I²C sensing
+    // boards above. The command wire (`buildActuatorCommand`) addresses each by
+    // its logical output `port` ("OUT1".."OUT16"); the firmware owns the
+    // OUTn→GPIO mapping, so `gpio`/`channel` here are display metadata only.
+    // `mode` is 'pwm' (variable, uses `duty`) or 'binary' (plain on/off). `duty`
+    // is stored in operator PERCENT (0–100) for the UI and converted to the
+    // wire's 0–255 at command-build time. `state`/`duty` are the last commanded
+    // values; `lastAck` mirrors the edge node's acknowledgment ('ok' |
+    // 'executed' | 'pending' | 'rejected' | 'expired'). `dur` (s) is the
+    // auto-off window, 0 = hold until next command. Actuators are NOT one-to-one
+    // with sensors (thesis scope) — this node has 3 sensors, 3 unrelated outputs.
+    actuators: [
+      { id: 'fan01', name: 'Circulation Fan', port: 'OUT1', channel: 0, gpio: 25, mode: 'pwm',    state: 1, duty: 65, dur: 0, lastAck: 'ok',      updatedAt: Date.now() - 42000 },
+      { id: 'htr01', name: 'Water Heater',     port: 'OUT2', channel: 1, gpio: 26, mode: 'binary', state: 0, duty: 0,  dur: 0, lastAck: 'ok',      updatedAt: Date.now() - 600000 },
+      { id: 'aer01', name: 'Aerator Pump',     port: 'OUT3', channel: 2, gpio: 27, mode: 'pwm',    state: 0, duty: 40, dur: 0, lastAck: 'pending', updatedAt: Date.now() - 5000 },
+    ],
   },
   {
     // No expansion board has reported in for this node yet — `modules: []`.
@@ -211,6 +295,10 @@ export const devices = [
     rssi: -54,
     freeHeap: 151040,
     modules: [],
+    // No actuators wired to this node yet — same proof-of-dynamism as its empty
+    // `modules` above: the Control page renders "No actuators configured"
+    // instead of a control card, driven entirely by this empty array.
+    actuators: [],
   },
 ];
 

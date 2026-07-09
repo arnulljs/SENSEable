@@ -4,11 +4,18 @@ import DeviceOverview from './pages/DeviceOverview';
 import SensorDetail from './pages/SensorDetail';
 import Notifications from './pages/Notifications';
 import Calibration from './pages/Calibration';
+import Actuators from './pages/Actuators';
 import Team from './pages/Team';
 import LoginPage from './pages/LoginPage';
 import CreateAccountPage from './pages/CreateAccountPage';
 import { useAuth } from './context/AuthContext';
-import { devices as seedDevices, notifications as allNotifications, computeSensorStatus } from './mockData';
+import {
+  devices as seedDevices,
+  notifications as allNotifications,
+  computeSensorStatus,
+  buildActuatorCommand,
+  clampDuty,
+} from './mockData';
 import './App.css';
 
 // Shown whenever there's no signed-in user. Its own tiny bit of local
@@ -26,7 +33,7 @@ export default function App() {
   const { currentUser, currentOrg, isDesigner } = useAuth();
 
   // Top-level navigation
-  const [currentPage, setCurrentPage] = useState('home'); // 'home' | 'notifications' | 'calibration' | 'team'
+  const [currentPage, setCurrentPage] = useState('home'); // 'home' | 'notifications' | 'calibration' | 'control' | 'team'
 
   // The FULL (unfiltered, all-tenants) device list lives here as App-level
   // state — not a static mockData import — so Edit Sensor edits persist and
@@ -119,6 +126,47 @@ export default function App() {
     }));
   }
 
+  // Issues an actuator command from the Control page. Builds the downlink
+  // command packet (the exact wire shape the backend/MQTT path will publish)
+  // and optimistically applies the resulting output state to the actuator on
+  // the owning device. Kept here — not in the page — so App stays the single
+  // owner of device state, exactly like updatePort above. Returns the built
+  // packet so the Control page can show it in its command inspector.
+  //
+  // `lastAck` is set optimistically to 'ok' because there's no broker yet to
+  // return a real acknowledgment packet; once MQTT is wired, this becomes
+  // 'pending' on send and flips to the ack's `res` value when it arrives.
+  function commandActuator(deviceId, actuatorId, out) {
+    const device = allDevicesState.find(d => d.id === deviceId);
+    const actuator = device?.actuators?.find(a => a.id === actuatorId);
+    if (!device || !actuator) return null;
+
+    const packet = buildActuatorCommand(device, actuator, out);
+    const mode = out.mode === 'binary' ? 'binary' : 'pwm';
+
+    setAllDevicesState(prev => prev.map(d => {
+      if (d.id !== deviceId) return d;
+      return {
+        ...d,
+        actuators: (d.actuators || []).map(a => {
+          if (a.id !== actuatorId) return a;
+          return {
+            ...a,
+            mode,
+            state: out.state ? 1 : 0,
+            // Duty only applies to PWM; binary keeps its stored value untouched.
+            duty: mode === 'pwm' ? clampDuty(out.duty) : a.duty,
+            dur: Math.max(0, Math.round(Number(out.dur) || 0)),
+            lastAck: 'ok',
+            updatedAt: Date.now(),
+          };
+        }),
+      };
+    }));
+
+    return packet;
+  }
+
   // Not signed in → the whole app is just the auth screens. Everything
   // below this point can safely assume `currentUser`/`currentOrg` exist.
   if (!currentUser) {
@@ -177,6 +225,8 @@ export default function App() {
         );
       case 'calibration':
         return <Calibration devices={orgDevices} />;
+      case 'control':
+        return <Actuators devices={orgDevices} onCommandActuator={commandActuator} />;
       case 'team':
         return <Team />;
       default:

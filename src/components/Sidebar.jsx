@@ -19,6 +19,15 @@ const IconWrench = () => (
   </svg>
 );
 
+const IconControl = () => (
+  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+    <line x1="3" y1="6" x2="17" y2="6" />
+    <line x1="3" y1="14" x2="17" y2="14" />
+    <circle cx="8" cy="6" r="2.2" fill="currentColor" stroke="none" />
+    <circle cx="13" cy="14" r="2.2" fill="currentColor" stroke="none" />
+  </svg>
+);
+
 const IconTeam = () => (
   <svg viewBox="0 0 20 20" fill="currentColor">
     <path d="M7 9a3 3 0 100-6 3 3 0 000 6zM3 16.5c0-2.49 2.015-4.5 4.5-4.5h1c2.485 0 4.5 2.01 4.5 4.5v.25a.25.25 0 01-.25.25H3.25a.25.25 0 01-.25-.25v-.25z" />
@@ -54,6 +63,7 @@ const NAV_ITEMS = [
   { id: 'home',          label: 'Home',          Icon: IconHome    },
   { id: 'notifications', label: 'Notifications', Icon: IconBell    },
   { id: 'calibration',   label: 'Calibration',   Icon: IconWrench  },
+  { id: 'control',       label: 'Control',       Icon: IconControl },
   { id: 'team',          label: 'Team',          Icon: IconTeam    },
 ];
 
