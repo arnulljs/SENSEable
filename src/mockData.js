@@ -146,7 +146,7 @@ export const roles = [
 // than invented ad hoc in AuthContext.
 export const organizations = [
   {
-    id: 'tnt_aquatech',
+    id: 'aquatech',
     name: 'AquaTech Hatchery Corp',
     slug: 'aquatech',
     orgCode: 'AQUA-7421',
@@ -160,7 +160,7 @@ export const organizations = [
     // ESP32 Module 2's `modules: []`, just one level up: a whole tenant
     // with no hardware registered yet, so the UI's empty states get
     // exercised at the organization level too, not just the device level.
-    id: 'tnt_llba',
+    id: 'llba',
     name: 'Lapu-Lapu Bay Aquafarms',
     slug: 'llba',
     orgCode: 'LLBA-3309',
@@ -180,7 +180,7 @@ export const organizations = [
 export const users = [
   {
     id: 'usr_mariz',
-    tenantId: 'tnt_aquatech',
+    tenantId: 'aquatech',
     roleId: 'designer',
     fullName: 'Mariz Santos',
     email: 'mariz@aquatech.ph',
@@ -190,7 +190,7 @@ export const users = [
   },
   {
     id: 'usr_jay',
-    tenantId: 'tnt_aquatech',
+    tenantId: 'aquatech',
     roleId: 'operator',
     fullName: 'Jay Bautista',
     email: 'jay@aquatech.ph',
@@ -200,7 +200,7 @@ export const users = [
   },
   {
     id: 'usr_dane',
-    tenantId: 'tnt_llba',
+    tenantId: 'llba',
     roleId: 'designer',
     fullName: 'Dane Lim',
     email: 'dane@llba.ph',
@@ -227,7 +227,7 @@ export const users = [
 export const devices = [
   {
     id: 'n1',
-    tenantId: 'tnt_aquatech',
+    tenantId: 'aquatech',
     name: 'ESP32 Module 1',
     nodeId: 'N001',
     status: 'online',       // online | warning | fault | offline
@@ -286,7 +286,7 @@ export const devices = [
     // sensor grid, and Calibration's board list simply has nothing to show
     // for this device, all driven by the empty array below.
     id: 'n2',
-    tenantId: 'tnt_aquatech',
+    tenantId: 'aquatech',
     name: 'ESP32 Module 2',
     nodeId: 'N002',
     status: 'online',
@@ -307,10 +307,10 @@ export const devices = [
 // device/module/port triggered them), this is just the mock-data version
 // of that same column.
 export const notifications = [
-  { id: 1, tenantId: 'tnt_aquatech', type: 'warning', title: 'Dissolved Oxygen Low', message: 'Port A0 on Expansion Board 1 (ESP32 Module 1) is approaching the lower safe threshold.', time: '2 min ago', read: false },
-  { id: 2, tenantId: 'tnt_aquatech', type: 'info',    title: 'Device Connected',    message: 'ESP32 Module 1 connected via Wi-Fi at −61 dBm.', time: '1 hr ago', read: false },
-  { id: 3, tenantId: 'tnt_aquatech', type: 'success', title: 'Calibration Saved',   message: 'Formula for Dissolved Oxygen (DO) has been saved successfully.', time: '3 hr ago', read: true },
-  { id: 4, tenantId: 'tnt_aquatech', type: 'fault',   title: 'Sensor Port Fault',   message: 'Port A3 on Expansion Board 1 reports no valid response. Check wiring.', time: 'Yesterday', read: true },
+  { id: 1, tenantId: 'aquatech', type: 'warning', title: 'Dissolved Oxygen Low', message: 'Port A0 on Expansion Board 1 (ESP32 Module 1) is approaching the lower safe threshold.', time: '2 min ago', read: false },
+  { id: 2, tenantId: 'aquatech', type: 'info',    title: 'Device Connected',    message: 'ESP32 Module 1 connected via Wi-Fi at −61 dBm.', time: '1 hr ago', read: false },
+  { id: 3, tenantId: 'aquatech', type: 'success', title: 'Calibration Saved',   message: 'Formula for Dissolved Oxygen (DO) has been saved successfully.', time: '3 hr ago', read: true },
+  { id: 4, tenantId: 'aquatech', type: 'fault',   title: 'Sensor Port Fault',   message: 'Port A3 on Expansion Board 1 reports no valid response. Check wiring.', time: 'Yesterday', read: true },
 ];
 
 export const savedFormulas = [
@@ -344,9 +344,9 @@ export const sensorProfiles = [
 // the whole board from `devices`, and every placed sensor that points at
 // it updates (or gracefully falls back) with no changes needed here.
 export const mapSensors = [
-  { id: 's1', x: 210, y: 145, deviceId: 'n1', moduleId: 'board-1', portId: 'A0' }, // Dissolved Oxygen
-  { id: 's2', x: 375, y: 148, deviceId: 'n1', moduleId: 'board-1', portId: 'A1' }, // Salinity
-  { id: 's3', x: 295, y: 265, deviceId: 'n1', moduleId: 'board-1', portId: 'A2' }, // Temperature
+  { id: 's1', x: 210, y: 145, deviceId: 'aquatech:N001', moduleId: '0x48', portId: 'A0' }, // Dissolved Oxygen
+  { id: 's2', x: 375, y: 148, deviceId: 'aquatech:N001', moduleId: '0x48', portId: 'A1' }, // Salinity
+  { id: 's3', x: 295, y: 265, deviceId: 'aquatech:N001', moduleId: '0x48', portId: 'A2' }, // Temperature
 ];
 
 // Legacy generic sensor-type palette — no longer used by InteractiveMap

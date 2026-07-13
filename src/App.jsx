@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import DeviceOverview from './pages/DeviceOverview';
 import SensorDetail from './pages/SensorDetail';
@@ -16,7 +16,68 @@ import {
   buildActuatorCommand,
   clampDuty,
 } from './mockData';
+import { fetchDevices } from './api';
 import './App.css';
+
+// How often to pull fresh readings from the backend. 0 = fetch once on load
+// and never poll.
+const POLL_MS = 3000;
+
+// Merge live backend telemetry into App's device state WITHOUT clobbering
+// sensor CONFIG. Division of ownership:
+//   backend owns → live value, history, node status/commMode/uptime/rssi/heap
+//   frontend owns → label, unit, ranges, safe band (via Edit Sensor), and
+//                   actuators (the firmware has no `actuate` branch yet, and
+//                   projectDevices() doesn't return an actuators field at all)
+//
+// Status is always RECOMPUTED from the merged value against the *local*
+// thresholds, so an Edit Sensor change reflects immediately and is never
+// overwritten by the next poll.
+function mergeTelemetry(localDevices, backendDevices) {
+  const localById = new Map(localDevices.map(d => [d.id, d]));
+
+  return backendDevices.map(bd => {
+    const ld = localById.get(bd.id);
+
+    // Brand-new device the backend reported but we've never seen. NOTE the
+    // `actuators: []` default — Actuators.jsx does an unguarded
+    // `d.actuators.map(...)`, so a device without the field crashes the
+    // Control page. The backend never sends one.
+    if (!ld) return { ...bd, actuators: bd.actuators ?? [] };
+
+    return {
+      ...ld,                       // keep local config/name AND local actuators
+      status: bd.status,           // live node status from backend
+      commMode: bd.commMode,
+      uptime: bd.uptime,
+      rssi: bd.rssi,
+      freeHeap: bd.freeHeap,
+      actuators: ld.actuators ?? [],
+      modules: bd.modules.map(bm => {
+        const lm = ld.modules.find(m => m.id === bm.id);
+        if (!lm) return bm;        // newly discovered board
+        return {
+          ...lm,
+          ports: bm.ports.map(bp => {
+            const lp = lm.ports.find(p => p.id === bp.id);
+            if (!lp) return bp;    // newly discovered port
+            const value = bp.value;
+            const status = computeSensorStatus(
+              value, lp.rangeMin, lp.rangeMax, lp.safeMin, lp.safeMax
+            );
+            const history = (bp.history || []).map(h => ({
+              ...h,
+              status: computeSensorStatus(
+                h.value, lp.rangeMin, lp.rangeMax, lp.safeMin, lp.safeMax
+              ),
+            }));
+            return { ...lp, value, status, history };
+          }),
+        };
+      }),
+    };
+  });
+}
 
 // Shown whenever there's no signed-in user. Its own tiny bit of local
 // state just toggles between the two auth screens — nothing here needs
@@ -41,7 +102,34 @@ export default function App() {
   // `orgDevices` below is just a tenant-scoped *view* over this state; the
   // edit itself always happens against the full list so it isn't lost when
   // switching pages/users.
-  const [allDevicesState, setAllDevicesState] = useState(seedDevices);
+  const [allDevicesState, setAllDevicesState] = useState([]);
+
+  // ── Live backend telemetry ────────────────────────────────────────────
+  // Seeded from mockData above so the UI renders instantly and STILL WORKS
+  // if the backend is down. This effect then merges live data over it.
+  // Fetches every tenant's devices (each carries tenantId); `orgDevices`
+  // below still does the per-org scoping, so nothing here knows about auth.
+  // Backend unreachable → fetch throws → we keep the state we had.
+  useEffect(() => {
+    let alive = true;
+
+    async function pull() {
+      try {
+        const backend = await fetchDevices();
+        if (!alive) return;
+        // Functional update: always merge against the freshest local state,
+        // including an Edit Sensor change the user made mid-poll.
+        setAllDevicesState(prev => mergeTelemetry(prev, backend));
+      } catch {
+        // Backend offline — leave current state untouched.
+      }
+    }
+
+    pull();
+    if (!POLL_MS) return () => { alive = false; };
+    const id = setInterval(pull, POLL_MS);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
 
   // When set, shows the Sensor Detail view within the home context. Stored
   // as IDs (not object references) so the detail view always re-derives the

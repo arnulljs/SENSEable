@@ -136,7 +136,7 @@ export function AuthProvider({ children }) {
     await networkDelay(); // → backend: POST /api/orgs (creates a TENANTS row + its initial Designer USERS row)
     setAuthLoading(false);
 
-    const orgId = `tnt_${Date.now()}`;
+    const orgId = `org${Date.now()}`;
     const newOrg = {
       id: orgId,
       name: orgName.trim(),
