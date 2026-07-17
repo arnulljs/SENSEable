@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { devices as allDevices, buildActuatorCommand, clampDuty } from '../mockData';
+import { devices as allDevices, buildActuatorCommand, clampDuty, dutyPct } from '../mockData';
 
 // ─── Actuator Control ────────────────────────────────────────────────────────
 // The thesis models actuation as its own concern, distinct from sensing:
@@ -31,9 +31,10 @@ function ago(ts) {
 // Map the edge node's acknowledgment onto the app's existing status vocabulary
 // so the badge colors stay consistent with the rest of the UI.
 function ackClass(ack) {
-  if (ack === 'ok' || ack === 'executed') return 'Normal';
-  if (ack === 'rejected' || ack === 'expired') return 'Fault';
-  return 'offline'; // pending / unknown
+  // Frozen ack lifecycle: started | completed | stopped | failed | error | success
+  if (ack === 'success' || ack === 'completed' || ack === 'ok' || ack === 'executed') return 'Normal';
+  if (ack === 'failed' || ack === 'error' || ack === 'rejected' || ack === 'expired') return 'Fault';
+  return 'offline'; // pending / started / stopped / unknown (in-flight)
 }
 
 // Segmented-button style, matching Calibration's guided-type selector.
@@ -85,7 +86,7 @@ function ActuatorCard({ device, actuator, onCommand }) {
         <span className={`status-dot ${isOn ? 'online' : 'offline'}`} />
         <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-1)' }}>{a.name}</span>
         <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 600, color: isOn ? 'var(--green-text)' : 'var(--text-3)' }}>
-          {isOn ? (isPwm ? `ON · ${a.duty}%` : 'ON') : 'OFF'}
+          {isOn ? (isPwm ? `ON · ${dutyPct(a.duty)}%` : 'ON') : 'OFF'}
         </span>
       </div>
 
@@ -98,7 +99,7 @@ function ActuatorCard({ device, actuator, onCommand }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: 12, color: 'var(--text-2)', width: 48 }}>Mode</span>
         <button style={seg(isPwm)} onClick={() => setMode('pwm')}>PWM</button>
-        <button style={seg(!isPwm)} onClick={() => setMode('binary')}>Binary</button>
+        <button style={seg(!isPwm)} onClick={() => setMode('bin')}>Binary</button>
       </div>
 
       {/* Power: Off / On */}
@@ -112,11 +113,11 @@ function ActuatorCard({ device, actuator, onCommand }) {
       {isPwm && (
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>
-            <span>Duty cycle</span>
-            <strong style={{ color: 'var(--blue)', fontFamily: 'var(--font-mono)' }}>{duty}%</strong>
+            <span>Duty cycle (8-bit)</span>
+            <strong style={{ color: 'var(--blue)', fontFamily: 'var(--font-mono)' }}>{duty} · ≈{dutyPct(duty)}%</strong>
           </div>
           <input
-            type="range" min={0} max={100} value={duty}
+            type="range" min={0} max={255} value={duty}
             onChange={e => setDuty(clampDuty(e.target.value))}
             onMouseUp={commitDuty}
             onTouchEnd={commitDuty}
@@ -187,11 +188,11 @@ export default function Actuators({ devices: devicesProp, onCommandActuator }) {
           ...d,
           actuators: d.actuators.map(x => (x.id !== actId ? x : {
             ...x,
-            mode: out.mode === 'binary' ? 'binary' : 'pwm',
+            mode: out.mode === 'bin' ? 'bin' : 'pwm',
             state: out.state ? 1 : 0,
-            duty: out.mode === 'binary' ? x.duty : clampDuty(out.duty),
+            duty: out.mode === 'bin' ? x.duty : clampDuty(out.duty),
             dur: Math.max(0, Math.round(Number(out.dur) || 0)),
-            lastAck: 'ok',
+            lastAck: 'success',
             updatedAt: Date.now(),
           })),
         })));
@@ -210,7 +211,7 @@ export default function Actuators({ devices: devicesProp, onCommandActuator }) {
         <p style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 20px', maxWidth: 680 }}>
           Manual control for actuator-enabled nodes. Each output runs as a plain
           on/off (<strong>Binary</strong>) load or a variable <strong>PWM</strong> output
-          with a 0–100% duty cycle. Commands are addressed per node — actuators are
+          with an 8-bit (0–255) duty cycle. Commands are addressed per node — actuators are
           wired to the ESP32 mainboard, independent of the I²C sensing modules.
         </p>
 
@@ -253,7 +254,7 @@ export default function Actuators({ devices: devicesProp, onCommandActuator }) {
         {totalActuators > 0 && (
           <p style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>
             {totalActuators} actuator output{totalActuators === 1 ? '' : 's'} across {devices.length} node{devices.length === 1 ? '' : 's'}.
-            Acknowledgments are optimistic — no broker is connected yet, so commands are built but not published.
+            Commands publish through the backend (POST /commands); the ack lifecycle flips each badge as it arrives.
           </p>
         )}
       </div>

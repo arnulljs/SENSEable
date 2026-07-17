@@ -16,7 +16,7 @@ import {
   buildActuatorCommand,
   clampDuty,
 } from './mockData';
-import { fetchDevices } from './api';
+import { fetchDevices, actuate } from './api';
 import './App.css';
 
 // How often to pull fresh readings from the backend. 0 = fetch once on load
@@ -25,10 +25,9 @@ const POLL_MS = 3000;
 
 // Merge live backend telemetry into App's device state WITHOUT clobbering
 // sensor CONFIG. Division of ownership:
-//   backend owns → live value, history, node status/commMode/uptime/rssi/heap
-//   frontend owns → label, unit, ranges, safe band (via Edit Sensor), and
-//                   actuators (the firmware has no `actuate` branch yet, and
-//                   projectDevices() doesn't return an actuators field at all)
+//   backend owns → live value, history, node status/commMode/uptime/rssi/heap,
+//                   and the actuator cmd/ack lifecycle (last_ack, state, duty)
+//   frontend owns → label, unit, ranges, safe band (via Edit Sensor)
 //
 // Status is always RECOMPUTED from the merged value against the *local*
 // thresholds, so an Edit Sensor change reflects immediately and is never
@@ -52,7 +51,15 @@ function mergeTelemetry(localDevices, backendDevices) {
       uptime: bd.uptime,
       rssi: bd.rssi,
       freeHeap: bd.freeHeap,
-      actuators: ld.actuators ?? [],
+      // Actuators: the backend now owns the cmd/ack lifecycle (last_ack, state,
+      // duty), so merge its state over local by id. If the backend returned none
+      // (e.g. it's offline), keep whatever we had locally so the page still works.
+      actuators: (bd.actuators && bd.actuators.length)
+        ? bd.actuators.map(ba => {
+            const la = (ld.actuators || []).find(a => a.id === ba.id);
+            return la ? { ...la, ...ba } : ba;
+          })
+        : (ld.actuators ?? []),
       modules: bd.modules.map(bm => {
         const lm = ld.modules.find(m => m.id === bm.id);
         if (!lm) return bm;        // newly discovered board
@@ -230,8 +237,13 @@ export default function App() {
     if (!device || !actuator) return null;
 
     const packet = buildActuatorCommand(device, actuator, out);
-    const mode = out.mode === 'binary' ? 'binary' : 'pwm';
+    const mode = out.mode === 'bin' ? 'bin' : 'pwm';
+    const state = out.state ? 1 : 0;
+    const dur = Math.max(0, Math.round(Number(out.dur) || 0));
 
+    // Optimistic: reflect the intent immediately as 'pending'. The REAL ack
+    // lifecycle (started → completed/stopped, or failed/error) arrives through
+    // the /devices poll, which mergeTelemetry now folds in from the backend.
     setAllDevicesState(prev => prev.map(d => {
       if (d.id !== deviceId) return d;
       return {
@@ -241,16 +253,33 @@ export default function App() {
           return {
             ...a,
             mode,
-            state: out.state ? 1 : 0,
-            // Duty only applies to PWM; binary keeps its stored value untouched.
+            state,
             duty: mode === 'pwm' ? clampDuty(out.duty) : a.duty,
-            dur: Math.max(0, Math.round(Number(out.dur) || 0)),
-            lastAck: 'ok',
+            dur,
+            lastAck: 'pending',
             updatedAt: Date.now(),
           };
         }),
       };
     }));
+
+    // Publish through the backend: it resolves the broker `tid` from
+    // tenants.mqtt_tid, stamps a real cid, logs the command, and publishes to
+    // usc/thesis/{tid}/{nid}/cmd if a broker is connected. Fire-and-forget; on
+    // network failure flag the actuator so the badge reflects it.
+    actuate(deviceId, {
+      actuatorId,
+      mode,
+      state,
+      duty: mode === 'pwm' ? clampDuty(out.duty) : undefined,
+      dur,
+    }).catch(() => {
+      setAllDevicesState(prev => prev.map(d => (d.id !== deviceId ? d : {
+        ...d,
+        actuators: (d.actuators || []).map(a =>
+          a.id === actuatorId ? { ...a, lastAck: 'failed', updatedAt: Date.now() } : a),
+      })));
+    });
 
     return packet;
   }

@@ -34,28 +34,36 @@ export function computeSensorStatus(value, rangeMin, rangeMax, safeMin, safeMax)
 // nothing in the page changes.
 //
 // The command is FLAT (no nested act/out/safe wrappers) and discriminated by
-// `action`. For actuation:
+// `action`. For actuation (frozen "actuate" branch):
 //   action : "actuate"
-//   port   : "OUT1".."OUT16"   — logical output port (regex-enforced upstream)
-//   mode   : "bin" | "pwm"     — note the literal is "bin", not "binary"
+//   port   : integer 1..6      — OUT1..OUT6 (the wire carries the number, not "OUT1")
+//   mode   : "bin" | "pwm"     — the literal is "bin", not "binary"
 //   dur    : integer ≥ 0       — ALWAYS required (0 = hold until next command)
 //   state  : 0 | 1             — required for bin
 //   duty   : integer 0..255    — required for pwm (8-bit LEDC resolution)
 //
-// UI/state convention note: the Control page works in operator-friendly PERCENT
-// (0–100%) for duty; this builder converts to the wire's 0–255 at the boundary.
-// For pwm, an OFF command is expressed as duty 0 (the slider's set % is kept in
-// UI state and re-applied on the next ON). Routing uses `device.nodeId` (e.g.
-// "N001"), which is what the firmware/topic address by — NOT the internal `id`.
-export function clampDuty(pct) {
-  const n = Math.round(Number(pct));
+// This offline builder exists only for standalone/jsdom rendering (the "View
+// command" preview). In the running app the REAL command goes through the
+// backend (POST /commands), which resolves the broker `tid` from
+// tenants.mqtt_tid — the browser is never trusted to stamp it. Here we show
+// device.mqttTid if present so the preview matches the eventual wire packet.
+// Duty is 8-bit end-to-end now (slider is 0..255), so no percent conversion.
+export function clampDuty(v) {
+  const n = Math.round(Number(v));
   if (Number.isNaN(n)) return 0;
-  return Math.min(100, Math.max(0, n));
+  return Math.min(255, Math.max(0, n));
 }
 
-// Operator percent (0–100) → wire duty (0–255, 8-bit).
-export function dutyPctToRaw(pct) {
-  return Math.round((clampDuty(pct) / 100) * 255);
+// 8-bit duty → display percent (for the "≈X%" readout next to the slider).
+export function dutyPct(raw) {
+  return Math.round((clampDuty(raw) / 255) * 100);
+}
+
+// "OUT3" | "out3" | 3 → 3
+export function portNumber(port) {
+  if (typeof port === 'number') return port;
+  const m = String(port).match(/(\d+)/);
+  return m ? Number(m[1]) : NaN;
 }
 
 let _cmdSeq = 0;
@@ -68,12 +76,12 @@ export function buildActuatorCommand(device, actuator, out = {}) {
   const cmd = {
     t: 'cmd',
     v: 1,
-    tid: device.tenantId,          // tenant scope (align with topic tenant segment)
+    tid: device.mqttTid ?? '<resolved server-side>', // broker tid, stamped by backend
     nid: device.nodeId,            // route by node id (matches firmware, e.g. "N001")
     cid: 'c' + String(_cmdSeq).padStart(4, '0'),
     ts: Math.floor(Date.now() / 1000),
     action: 'actuate',
-    port: actuator.port,           // "OUT1".."OUT16"
+    port: portNumber(actuator.port), // integer 1..6 on the wire
     mode,
     dur,
   };
@@ -81,7 +89,7 @@ export function buildActuatorCommand(device, actuator, out = {}) {
   if (mode === 'bin') {
     cmd.state = on;                // binary carries explicit on/off
   } else {
-    cmd.duty = on ? dutyPctToRaw(out.duty) : 0; // pwm off ⇒ duty 0
+    cmd.duty = on ? clampDuty(out.duty) : 0; // pwm off ⇒ duty 0 (8-bit)
   }
 
   return cmd;
@@ -228,6 +236,7 @@ export const devices = [
   {
     id: 'n1',
     tenantId: 'aquatech',
+    mqttTid: 'tenant-123',   // broker-side tid (server resolves this from tenants.mqtt_tid)
     name: 'ESP32 Module 1',
     nodeId: 'N001',
     status: 'online',       // online | warning | fault | offline
@@ -275,9 +284,9 @@ export const devices = [
     // auto-off window, 0 = hold until next command. Actuators are NOT one-to-one
     // with sensors (thesis scope) — this node has 3 sensors, 3 unrelated outputs.
     actuators: [
-      { id: 'fan01', name: 'Circulation Fan', port: 'OUT1', channel: 0, gpio: 25, mode: 'pwm',    state: 1, duty: 65, dur: 0, lastAck: 'ok',      updatedAt: Date.now() - 42000 },
-      { id: 'htr01', name: 'Water Heater',     port: 'OUT2', channel: 1, gpio: 26, mode: 'binary', state: 0, duty: 0,  dur: 0, lastAck: 'ok',      updatedAt: Date.now() - 600000 },
-      { id: 'aer01', name: 'Aerator Pump',     port: 'OUT3', channel: 2, gpio: 27, mode: 'pwm',    state: 0, duty: 40, dur: 0, lastAck: 'pending', updatedAt: Date.now() - 5000 },
+      { id: 'fan01', name: 'Circulation Fan', port: 'OUT1', channel: 0, gpio: 25, mode: 'pwm', state: 1, duty: 166, dur: 0, lastAck: 'success', updatedAt: Date.now() - 42000 },
+      { id: 'htr01', name: 'Water Heater',     port: 'OUT2', channel: 1, gpio: 26, mode: 'bin', state: 0, duty: 0,   dur: 0, lastAck: 'success', updatedAt: Date.now() - 600000 },
+      { id: 'aer01', name: 'Aerator Pump',     port: 'OUT3', channel: 2, gpio: 27, mode: 'pwm', state: 0, duty: 102, dur: 0, lastAck: 'pending', updatedAt: Date.now() - 5000 },
     ],
   },
   {
