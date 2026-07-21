@@ -16,7 +16,12 @@ import {
   buildActuatorCommand,
   clampDuty,
 } from './mockData';
-import { fetchDevices, actuate } from './api';
+import {
+  fetchDevices, actuate,
+  renameDevice as apiRenameDevice,
+  renameModule as apiRenameModule,
+  renameActuator as apiRenameActuator,
+} from './api';
 import './App.css';
 
 // How often to pull fresh readings from the backend. 0 = fetch once on load
@@ -231,6 +236,54 @@ export default function App() {
   // `lastAck` is set optimistically to 'ok' because there's no broker yet to
   // return a real acknowledgment packet; once MQTT is wired, this becomes
   // 'pending' on send and flips to the ack's `res` value when it arrives.
+  // ── Renames (device / expansion board / actuator) ─────────────────────
+  // Optimistically patch the shared devices state so the new name shows
+  // instantly everywhere it's referenced, then persist to the backend (which
+  // writes it to Postgres). If the write fails, revert to the old name and
+  // rethrow so EditableName snaps its draft back too. Because merge keeps
+  // local device/module names between polls and a page reload re-seeds names
+  // straight from the DB, the rename is durable across sessions.
+  async function renameDeviceName(deviceId, name) {
+    const old = allDevicesState.find(d => d.id === deviceId)?.name;
+    setAllDevicesState(prev => prev.map(d => (d.id === deviceId ? { ...d, name } : d)));
+    try {
+      await apiRenameDevice(deviceId, name);
+    } catch (e) {
+      setAllDevicesState(prev => prev.map(d => (d.id === deviceId ? { ...d, name: old } : d)));
+      throw e;
+    }
+  }
+
+  async function renameModuleName(deviceId, moduleId, name) {
+    const old = allDevicesState.find(d => d.id === deviceId)
+      ?.modules.find(m => m.id === moduleId)?.name;
+    const patch = (nm) => (d) => (d.id !== deviceId ? d : {
+      ...d, modules: d.modules.map(m => (m.id === moduleId ? { ...m, name: nm } : m)),
+    });
+    setAllDevicesState(prev => prev.map(patch(name)));
+    try {
+      await apiRenameModule(deviceId, moduleId, name);
+    } catch (e) {
+      setAllDevicesState(prev => prev.map(patch(old)));
+      throw e;
+    }
+  }
+
+  async function renameActuatorName(deviceId, actuatorId, name) {
+    const old = allDevicesState.find(d => d.id === deviceId)
+      ?.actuators?.find(a => a.id === actuatorId)?.name;
+    const patch = (nm) => (d) => (d.id !== deviceId ? d : {
+      ...d, actuators: (d.actuators || []).map(a => (a.id === actuatorId ? { ...a, name: nm } : a)),
+    });
+    setAllDevicesState(prev => prev.map(patch(name)));
+    try {
+      await apiRenameActuator(deviceId, actuatorId, name);
+    } catch (e) {
+      setAllDevicesState(prev => prev.map(patch(old)));
+      throw e;
+    }
+  }
+
   function commandActuator(deviceId, actuatorId, out) {
     const device = allDevicesState.find(d => d.id === deviceId);
     const actuator = device?.actuators?.find(a => a.id === actuatorId);
@@ -305,6 +358,9 @@ export default function App() {
             devices={orgDevices}
             onSelectSensor={handleSelectSensor}
             canEditMap={isDesigner}
+            canEdit={isDesigner}
+            onRenameDevice={renameDeviceName}
+            onRenameModule={renameModuleName}
             tenantId={currentOrg.id}
             creatorName={currentUser.fullName}
           />
@@ -329,6 +385,9 @@ export default function App() {
             devices={orgDevices}
             onSelectSensor={handleSelectSensor}
             canEditMap={isDesigner}
+            canEdit={isDesigner}
+            onRenameDevice={renameDeviceName}
+            onRenameModule={renameModuleName}
             tenantId={currentOrg.id}
             creatorName={currentUser.fullName}
           />
@@ -343,7 +402,7 @@ export default function App() {
       case 'calibration':
         return <Calibration devices={orgDevices} />;
       case 'control':
-        return <Actuators devices={orgDevices} onCommandActuator={commandActuator} />;
+        return <Actuators devices={orgDevices} onCommandActuator={commandActuator} canEdit={isDesigner} onRenameActuator={renameActuatorName} />;
       case 'team':
         return <Team />;
       default:
@@ -352,6 +411,9 @@ export default function App() {
             devices={orgDevices}
             onSelectSensor={handleSelectSensor}
             canEditMap={isDesigner}
+            canEdit={isDesigner}
+            onRenameDevice={renameDeviceName}
+            onRenameModule={renameModuleName}
             tenantId={currentOrg.id}
             creatorName={currentUser.fullName}
           />

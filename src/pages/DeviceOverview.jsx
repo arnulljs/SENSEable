@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { devices as allDevices } from '../mockData';
 import GaugeCard from '../components/GaugeCard';
+import EditableName from '../components/EditableName';
 import InteractiveMap from './InteractiveMap';
 
 const IconOverview = () => (
@@ -29,6 +30,9 @@ export default function DeviceOverview({
   devices: devicesProp,
   onSelectSensor,
   canEditMap = true,
+  canEdit = false,          // gate on Designer role — enables renaming
+  onRenameDevice,           // (deviceId, name) => Promise
+  onRenameModule,           // (deviceId, moduleId, name) => Promise
   tenantId,
   creatorName,
 }) {
@@ -98,7 +102,13 @@ export default function DeviceOverview({
                   {/* Device header */}
                   <div className="device-card-header" onClick={() => toggleDevice(device.id)}>
                     <span className={`status-dot ${device.status}`} />
-                    <span className="device-name">{device.name}</span>
+                    <EditableName
+                      className="device-name"
+                      value={device.name}
+                      canEdit={canEdit && typeof onRenameDevice === 'function'}
+                      onRename={(name) => onRenameDevice(device.id, name)}
+                      title="Rename device"
+                    />
                     <span className="device-meta">
                       {device.commMode}
                       {device.rssi && <span>· {device.rssi} dBm</span>}
@@ -118,7 +128,13 @@ export default function DeviceOverview({
                         <div key={mod.id} className="module-section">
                           {/* Module header */}
                           <div className="module-header" onClick={() => toggleModule(mod.id)}>
-                            <span className="module-name">{mod.name}</span>
+                            <EditableName
+                              className="module-name"
+                              value={mod.name}
+                              canEdit={canEdit && typeof onRenameModule === 'function'}
+                              onRename={(name) => onRenameModule(device.id, mod.id, name)}
+                              title="Rename expansion board"
+                            />
                             <span className="module-address">{mod.address}</span>
                             <IconChevron open={expandedModules[mod.id]} />
                           </div>

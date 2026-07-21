@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { devices as allDevices, buildActuatorCommand, clampDuty, dutyPct } from '../mockData';
+import EditableName from '../components/EditableName';
 
 // ─── Actuator Control ────────────────────────────────────────────────────────
 // The thesis models actuation as its own concern, distinct from sensing:
@@ -48,7 +49,7 @@ function seg(active, activeBg = 'var(--blue)', activeFg = '#fff') {
   };
 }
 
-function ActuatorCard({ device, actuator, onCommand }) {
+function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }) {
   const a = actuator;
   const isPwm = a.mode === 'pwm';
   const isOn = a.state === 1;
@@ -84,7 +85,14 @@ function ActuatorCard({ device, actuator, onCommand }) {
       {/* Header: name + live state + ack */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
         <span className={`status-dot ${isOn ? 'online' : 'offline'}`} />
-        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-1)' }}>{a.name}</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-1)' }}>
+          <EditableName
+            value={a.name}
+            canEdit={canEdit && typeof onRename === 'function'}
+            onRename={(name) => onRename(device.id, a.id, name)}
+            title="Rename actuator"
+          />
+        </span>
         <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 600, color: isOn ? 'var(--green-text)' : 'var(--text-3)' }}>
           {isOn ? (isPwm ? `ON · ${dutyPct(a.duty)}%` : 'ON') : 'OFF'}
         </span>
@@ -165,7 +173,7 @@ function ActuatorCard({ device, actuator, onCommand }) {
   );
 }
 
-export default function Actuators({ devices: devicesProp, onCommandActuator }) {
+export default function Actuators({ devices: devicesProp, onCommandActuator, canEdit = false, onRenameActuator }) {
   const hasHandler = typeof onCommandActuator === 'function';
 
   // In the real app, render purely from App's tenant-scoped `devices` prop and
@@ -243,7 +251,7 @@ export default function Actuators({ devices: devicesProp, onCommandActuator }) {
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
                   {device.actuators.map(act => (
-                    <ActuatorCard key={act.id} device={device} actuator={act} onCommand={command} />
+                    <ActuatorCard key={act.id} device={device} actuator={act} onCommand={command} canEdit={canEdit} onRename={onRenameActuator} />
                   ))}
                 </div>
               )}
