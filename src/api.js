@@ -46,6 +46,28 @@ export const renameModule = (deviceId, moduleId, name) =>
 export const renameActuator = (deviceId, actuatorId, name) =>
   send('PATCH', `/devices/${encodeURIComponent(deviceId)}/actuators/${encodeURIComponent(actuatorId)}`, { name });
 
+// ── Enabling / disabling a channel ──────────────────────────────────────────
+// An ADS1115 input with nothing wired to it floats and reads leakage voltage,
+// which is indistinguishable from a real signal downstream. Disabling tells the
+// server to stop monitoring and recording it, and asks the firmware (via
+// sensor_port_down) to stop sampling it at source.
+export const setPortEnabled = (deviceId, moduleId, portId, enabled, reason = null) =>
+  send('PATCH',
+    `/devices/${encodeURIComponent(deviceId)}/modules/${encodeURIComponent(moduleId)}/ports/${encodeURIComponent(portId)}/enabled`,
+    { enabled, reason });
+
+// ── Removing hardware from the inventory ────────────────────────────────────
+// Only permitted while the target is offline. Hardware that has merely gone
+// quiet is kept (reading Offline) so its calibration and naming survive a
+// dropped connection; the backend answers 409 if you try to remove something
+// that's still reporting.
+export const removeDevice = (deviceId) =>
+  send('DELETE', `/devices/${encodeURIComponent(deviceId)}`);
+export const removeModule = (deviceId, moduleId) =>
+  send('DELETE', `/devices/${encodeURIComponent(deviceId)}/modules/${encodeURIComponent(moduleId)}`);
+export const removePort = (deviceId, moduleId, portId) =>
+  send('DELETE', `/devices/${encodeURIComponent(deviceId)}/modules/${encodeURIComponent(moduleId)}/ports/${encodeURIComponent(portId)}`);
+
 // ── Downward commands (actuate / bus_recovery / sensor_port_up|down) ─────────
 // The backend resolves the broker `tid` from tenants.mqtt_tid, builds the exact
 // wire envelope, logs it (cid), and publishes to usc/thesis/{tid}/{nid}/cmd if a

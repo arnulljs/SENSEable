@@ -3,6 +3,19 @@ import { useState } from 'react';
 import { devices as allDevices } from '../mockData';
 import GaugeCard from '../components/GaugeCard';
 import EditableName from '../components/EditableName';
+import RemoveButton from '../components/RemoveButton';
+import PortPowerButton from '../components/PortPowerButton';
+
+// Compact relative age for the "last seen" hint on offline hardware.
+function relTime(ts) {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
 import InteractiveMap from './InteractiveMap';
 
 const IconOverview = () => (
@@ -33,6 +46,10 @@ export default function DeviceOverview({
   canEdit = false,          // gate on Designer role — enables renaming
   onRenameDevice,           // (deviceId, name) => Promise
   onRenameModule,           // (deviceId, moduleId, name) => Promise
+  onRemoveDevice,           // (deviceId) => Promise
+  onRemoveModule,           // (deviceId, moduleId) => Promise
+  onRemovePort,             // (deviceId, moduleId, portId) => Promise
+  onSetPortEnabled,         // (deviceId, moduleId, portId, enabled, reason) => Promise
   tenantId,
   creatorName,
 }) {
@@ -93,7 +110,14 @@ export default function DeviceOverview({
         <div className="page-body">
           {devices.length === 0 ? (
             <div style={{ textAlign: 'center', padding: 60, color: 'var(--text-3)' }}>
-              No ESP32 modules have been registered for this organization yet.
+              <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-2)', marginBottom: 8 }}>
+                No hardware detected yet
+              </div>
+              <div style={{ fontSize: 13, lineHeight: 1.6, maxWidth: 460, margin: '0 auto' }}>
+                Nodes appear here automatically the first time they publish telemetry.
+                Power on an ESP32 and confirm it&apos;s reaching the broker — its expansion
+                boards and channels will be added as they&apos;re discovered.
+              </div>
             </div>
           ) : (
             <div className="device-list">
@@ -112,7 +136,21 @@ export default function DeviceOverview({
                     <span className="device-meta">
                       {device.commMode}
                       {device.rssi && <span>· {device.rssi} dBm</span>}
+                      {device.active === false && device.lastSeen && (
+                        <span style={{ whiteSpace: 'nowrap' }}
+                              title={`Last reported ${new Date(device.lastSeen).toLocaleString()}`}>
+                          · last seen {relTime(device.lastSeen)}
+                        </span>
+                      )}
                     </span>
+                    {canEdit && typeof onRemoveDevice === 'function' && (
+                      <RemoveButton
+                        active={device.active !== false}
+                        label={`node "${device.name}"`}
+                        title="Remove this node and everything under it"
+                        onRemove={() => onRemoveDevice(device.id)}
+                      />
+                    )}
                     <IconChevron open={expandedDevices[device.id]} />
                   </div>
 
@@ -128,6 +166,10 @@ export default function DeviceOverview({
                         <div key={mod.id} className="module-section">
                           {/* Module header */}
                           <div className="module-header" onClick={() => toggleModule(mod.id)}>
+                            <span
+                              className={`status-dot ${mod.status ?? 'offline'}`}
+                              title={`Board is ${mod.status ?? 'offline'}`}
+                            />
                             <EditableName
                               className="module-name"
                               value={mod.name}
@@ -136,6 +178,25 @@ export default function DeviceOverview({
                               title="Rename expansion board"
                             />
                             <span className="module-address">{mod.address}</span>
+                            {mod.active === false && mod.lastSeen && (
+                              <span
+                                style={{
+                                  fontSize: 11, color: 'var(--text-3)', whiteSpace: 'nowrap',
+                                  overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 1,
+                                }}
+                                title={`Last reported ${new Date(mod.lastSeen).toLocaleString()}`}
+                              >
+                                last seen {relTime(mod.lastSeen)}
+                              </span>
+                            )}
+                            {canEdit && typeof onRemoveModule === 'function' && (
+                              <RemoveButton
+                                active={mod.active !== false}
+                                label={`board "${mod.name}"`}
+                                title="Remove this expansion board and its channels"
+                                onRemove={() => onRemoveModule(device.id, mod.id)}
+                              />
+                            )}
                             <IconChevron open={expandedModules[mod.id]} />
                           </div>
 
@@ -143,11 +204,44 @@ export default function DeviceOverview({
                           {expandedModules[mod.id] && (
                             <div className="sensor-grid">
                               {mod.ports.map(port => (
-                                <GaugeCard
+                                <div
                                   key={port.id}
+                                  style={{
+                                    position: 'relative',
+                                    // A disabled channel stays visible (so it can be
+                                    // switched back on) but steps back visually. The card
+                                    // itself renders the OFF badge and a muted needle, so
+                                    // this is only a gentle dim — stacking a full grayscale
+                                    // on top made the badge text unreadable.
+                                    opacity: port.enabled === false ? 0.7 : 1,
+                                    transition: 'opacity .2s ease',
+                                  }}
+                                >
+                                  <div style={{ position: 'absolute', top: 6, right: 6, zIndex: 2,
+                                                display: 'flex', alignItems: 'center', gap: 2 }}>
+                                    {typeof onSetPortEnabled === 'function' && (
+                                      <PortPowerButton
+                                        port={port}
+                                        canEdit={canEdit}
+                                        onToggle={(enabled, reason) =>
+                                          onSetPortEnabled(device.id, mod.id, port.id, enabled, reason)}
+                                      />
+                                    )}
+                                    {canEdit && typeof onRemovePort === 'function' && (
+                                      <RemoveButton
+                                        active={port.active !== false}
+                                        label={`channel ${port.id}`}
+                                        title="Remove this channel"
+                                        onRemove={() => onRemovePort(device.id, mod.id, port.id)}
+                                      />
+                                    )}
+                                  </div>
+
+                                <GaugeCard
                                   port={port}
                                   onClick={() => onSelectSensor(device, mod, port)}
                                 />
+                                </div>
                               ))}
                             </div>
                           )}

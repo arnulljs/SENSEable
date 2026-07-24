@@ -21,6 +21,10 @@ import {
   renameDevice as apiRenameDevice,
   renameModule as apiRenameModule,
   renameActuator as apiRenameActuator,
+  removeDevice as apiRemoveDevice,
+  removeModule as apiRemoveModule,
+  removePort as apiRemovePort,
+  setPortEnabled as apiSetPortEnabled,
 } from './api';
 import './App.css';
 
@@ -56,6 +60,13 @@ function mergeTelemetry(localDevices, backendDevices) {
       uptime: bd.uptime,
       rssi: bd.rssi,
       freeHeap: bd.freeHeap,
+      // PRESENCE IS BACKEND-OWNED. Only the server knows when hardware last
+      // reported, so these must be copied on every poll. Leaving them to the
+      // `...ld` spread froze them at whatever the first page load returned —
+      // which is why a node publishing right now still read "last seen 22h ago".
+      lastSeen: bd.lastSeen ?? null,
+      active: bd.active,
+      configured: bd.configured,
       // Actuators: the backend now owns the cmd/ack lifecycle (last_ack, state,
       // duty), so merge its state over local by id. If the backend returned none
       // (e.g. it's offline), keep whatever we had locally so the page still works.
@@ -70,20 +81,51 @@ function mergeTelemetry(localDevices, backendDevices) {
         if (!lm) return bm;        // newly discovered board
         return {
           ...lm,
+          // Board presence + its own status rollup are backend-derived too.
+          lastSeen: bm.lastSeen ?? null,
+          active: bm.active,
+          status: bm.status,
+          configured: bm.configured,
           ports: bm.ports.map(bp => {
             const lp = lm.ports.find(p => p.id === bp.id);
             if (!lp) return bp;    // newly discovered port
             const value = bp.value;
-            const status = computeSensorStatus(
-              value, lp.rangeMin, lp.rangeMax, lp.safeMin, lp.safeMax
-            );
+
+            // Status is a JOINT decision and the split matters:
+            //
+            //   Backend-only  Disabled (operator switched the channel off) and
+            //                 Offline (nothing reported inside STALE_MS). The
+            //                 browser cannot derive either — it has no clock
+            //                 against last_seen and no enabled flag of its own.
+            //
+            //   Client-side   Normal / Warning / Fault, because those depend on
+            //                 the safe band, which the operator may have edited
+            //                 locally and not yet saved.
+            //
+            // Recomputing unconditionally (the old behaviour) discarded the two
+            // verdicts only the server can make, so a dead or disabled channel
+            // kept showing a cheerful colour derived from its last known value.
+            const status = (bp.status === 'Disabled' || bp.status === 'Offline')
+              ? bp.status
+              : computeSensorStatus(value, lp.rangeMin, lp.rangeMax, lp.safeMin, lp.safeMax);
+
             const history = (bp.history || []).map(h => ({
               ...h,
               status: computeSensorStatus(
                 h.value, lp.rangeMin, lp.rangeMax, lp.safeMin, lp.safeMax
               ),
             }));
-            return { ...lp, value, status, history };
+            return {
+              ...lp,
+              value, status, history,
+              lastSeen: bp.lastSeen ?? null,
+              active: bp.active,
+              enabled: bp.enabled,
+              configured: bp.configured,
+              activeFlag: bp.activeFlag,
+              connState: bp.connState ?? null,
+              masked: !!bp.masked,
+            };
           }),
         };
       }),
@@ -284,6 +326,57 @@ export default function App() {
     }
   }
 
+  // ── Enabling / disabling a channel ─────────────────────────────────────
+  // Optimistic, because the operator is asserting a fact about the physical
+  // world ("nothing is plugged into A2") rather than requesting something that
+  // might be refused. The backend records it unconditionally; only a network
+  // failure can undo it, and then we put the flag back.
+  async function setPortEnabledEntry(deviceId, moduleId, portId, enabled, reason) {
+    const patch = (on) => (d) => (d.id !== deviceId ? d : {
+      ...d,
+      modules: d.modules.map(m => (m.id !== moduleId ? m : {
+        ...m,
+        ports: m.ports.map(p => (p.id !== portId ? p : {
+          ...p, enabled: on, status: on ? p.status : 'Disabled',
+        })),
+      })),
+    });
+    setAllDevicesState(prev => prev.map(patch(enabled)));
+    try {
+      await apiSetPortEnabled(deviceId, moduleId, portId, enabled, reason);
+    } catch (e) {
+      setAllDevicesState(prev => prev.map(patch(!enabled)));
+      throw e;
+    }
+  }
+
+  // ── Removing hardware ──────────────────────────────────────────────────
+  // The backend is the authority on whether a removal is allowed (it refuses
+  // with 409 while the hardware is still reporting), so we wait for it to
+  // succeed BEFORE touching local state. Optimistically dropping the row first
+  // would make a refused delete look like it worked until the next poll.
+  async function removeDeviceEntry(deviceId) {
+    await apiRemoveDevice(deviceId);
+    setAllDevicesState(prev => prev.filter(d => d.id !== deviceId));
+  }
+
+  async function removeModuleEntry(deviceId, moduleId) {
+    await apiRemoveModule(deviceId, moduleId);
+    setAllDevicesState(prev => prev.map(d => (d.id !== deviceId ? d : {
+      ...d, modules: d.modules.filter(m => m.id !== moduleId),
+    })));
+  }
+
+  async function removePortEntry(deviceId, moduleId, portId) {
+    await apiRemovePort(deviceId, moduleId, portId);
+    setAllDevicesState(prev => prev.map(d => (d.id !== deviceId ? d : {
+      ...d,
+      modules: d.modules.map(m => (m.id !== moduleId ? m : {
+        ...m, ports: m.ports.filter(p => p.id !== portId),
+      })),
+    })));
+  }
+
   function commandActuator(deviceId, actuatorId, out) {
     const device = allDevicesState.find(d => d.id === deviceId);
     const actuator = device?.actuators?.find(a => a.id === actuatorId);
@@ -361,6 +454,10 @@ export default function App() {
             canEdit={isDesigner}
             onRenameDevice={renameDeviceName}
             onRenameModule={renameModuleName}
+            onRemoveDevice={removeDeviceEntry}
+            onRemoveModule={removeModuleEntry}
+            onRemovePort={removePortEntry}
+            onSetPortEnabled={setPortEnabledEntry}
             tenantId={currentOrg.id}
             creatorName={currentUser.fullName}
           />
@@ -388,6 +485,10 @@ export default function App() {
             canEdit={isDesigner}
             onRenameDevice={renameDeviceName}
             onRenameModule={renameModuleName}
+            onRemoveDevice={removeDeviceEntry}
+            onRemoveModule={removeModuleEntry}
+            onRemovePort={removePortEntry}
+            onSetPortEnabled={setPortEnabledEntry}
             tenantId={currentOrg.id}
             creatorName={currentUser.fullName}
           />
@@ -414,6 +515,10 @@ export default function App() {
             canEdit={isDesigner}
             onRenameDevice={renameDeviceName}
             onRenameModule={renameModuleName}
+            onRemoveDevice={removeDeviceEntry}
+            onRemoveModule={removeModuleEntry}
+            onRemovePort={removePortEntry}
+            onSetPortEnabled={setPortEnabledEntry}
             tenantId={currentOrg.id}
             creatorName={currentUser.fullName}
           />
