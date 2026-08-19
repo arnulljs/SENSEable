@@ -17,7 +17,7 @@ import {
   clampDuty,
 } from './mockData';
 import {
-  fetchDevices, actuate,
+  fetchDevices, actuate, setTenant,
   renameDevice as apiRenameDevice,
   renameModule as apiRenameModule,
   renameActuator as apiRenameActuator,
@@ -164,8 +164,16 @@ export default function App() {
   // Fetches every tenant's devices (each carries tenantId); `orgDevices`
   // below still does the per-org scoping, so nothing here knows about auth.
   // Backend unreachable → fetch throws → we keep the state we had.
+  const tenantSlug = currentOrg?.slug ?? null;
+
   useEffect(() => {
     let alive = true;
+
+    // Declare the tenant BEFORE the first fetch. The cloud tier fails closed:
+    // an unscoped read is a 400, not an empty list, so a request that races
+    // ahead of this call is simply lost.
+    setTenant(tenantSlug);
+    if (!tenantSlug) return () => { alive = false; };
 
     async function pull() {
       try {
@@ -183,7 +191,7 @@ export default function App() {
     if (!POLL_MS) return () => { alive = false; };
     const id = setInterval(pull, POLL_MS);
     return () => { alive = false; clearInterval(id); };
-  }, []);
+  }, [tenantSlug]);
 
   // When set, shows the Sensor Detail view within the home context. Stored
   // as IDs (not object references) so the detail view always re-derives the
@@ -200,8 +208,8 @@ export default function App() {
   // goes away entirely and the prop below just passes through whatever the
   // API already scoped to the signed-in org.
   const orgDevices = useMemo(
-    () => (currentOrg ? allDevicesState.filter(d => d.tenantId === currentOrg.id) : []),
-    [allDevicesState, currentOrg]
+    () => (tenantSlug ? allDevicesState.filter(d => d.tenantId === tenantSlug) : []),
+    [allDevicesState, tenantSlug]
   );
   const orgNotifications = useMemo(
     () => (currentOrg ? allNotifications.filter(n => n.tenantId === currentOrg.id) : []),

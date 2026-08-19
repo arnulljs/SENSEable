@@ -1,34 +1,128 @@
 // api.js ────────────────────────────────────────────────────────────────────
-// Drop this into the React app (e.g. src/api.js) to replace the static
-// mockData imports with live backend calls. Same data shapes, so components
-// need only swap `import { devices } from './mockData'` for a fetch in
-// useEffect. Set VITE_API_URL in the app's .env if the backend isn't on :4000.
+// The single seam between the React app and whichever tier is answering.
+//
+// TWO TIERS, ONE CLIENT
+//   edge   — Express on the local network, full read/write, MQTT publication.
+//            VITE_API_URL unset  ->  http://localhost:4000
+//   cloud  — Vercel serverless functions over Supabase, READ-ONLY.
+//            VITE_API_URL set to '' -> same-origin '/api/...'
+//
+// Both tiers return byte-identical shapes (senseable-api/src/read.js and
+// SENSEable/api/_read.js are mirrors of each other), so nothing downstream of
+// this file needs to know which one it's talking to.
+//
+// TENANCY
+// Every request must declare a tenant. The cloud tier resolves it through
+// resolve_tenant() and then runs the whole transaction under RLS as
+// senseable_app, so a handler bug physically cannot read another tenant's
+// rows. It FAILS CLOSED: no tenant -> 400, not "all tenants".
+//
+// The slug is held at module scope rather than threaded through all ~25
+// exported functions. App.jsx calls setTenant() whenever the signed-in
+// organization changes; every request after that carries x-tenant-id.
 
 const BASE = import.meta.env?.VITE_API_URL ?? 'http://localhost:4000';
 
-async function get(path) {
-  const res = await fetch(`${BASE}/api${path}`);
-  if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
-  return res.json();
+// ── Tenant scoping ──────────────────────────────────────────────────────────
+
+let currentTenant = null;
+
+/**
+ * Declare which tenant subsequent requests belong to. Pass the SLUG
+ * (tenants.slug in Postgres — 'aquatech', 'llba'), not the AuthContext org id.
+ * They happen to be equal for the two seeded organizations, but an org created
+ * through the UI gets a generated id and a slugify()'d slug, and only the slug
+ * exists server-side.
+ *
+ * Pass null on sign-out so a stale tenant can't leak into the next session.
+ */
+export function setTenant(slug) {
+  currentTenant = slug || null;
 }
-async function send(method, path, body) {
-  const res = await fetch(`${BASE}/api${path}`, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body == null ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}`);
+
+export function getTenant() {
+  return currentTenant;
+}
+
+// ── Transport ───────────────────────────────────────────────────────────────
+
+function headers(extra) {
+  const h = { ...extra };
+  // Omitted entirely rather than sent empty: the server distinguishes "no
+  // tenant declared" (400) from "unknown tenant" (404), and an empty string
+  // would muddy that into a confusing 404.
+  if (currentTenant) h['x-tenant-id'] = currentTenant;
+  return h;
+}
+
+// Turns transport failures into messages that say what actually went wrong.
+// A bare "GET /devices -> 405" sent someone debugging the database for an hour
+// when the real answer was "that tier doesn't accept writes."
+async function fail(method, path, res) {
+  let detail = '';
+  try {
+    const body = await res.json();
+    detail = body?.error ? ` — ${body.error}` : '';
+  } catch {
+    // Non-JSON body (an HTML error page, or an empty 502). Nothing to add.
+  }
+
+  if (res.status === 400 && !currentTenant) {
+    return new Error(
+      `${method} ${path} — no organization selected. ` +
+      'The API is tenant-scoped and refuses unscoped reads.');
+  }
+  if (res.status === 404 && currentTenant) {
+    return new Error(
+      `${method} ${path} — organization '${currentTenant}' has no data on this tier. ` +
+      'It may exist only in this browser and never have been provisioned server-side.');
+  }
+  if (res.status === 405) {
+    return new Error(
+      `${method} ${path} — this tier is read-only. ` +
+      'Writes require the on-site edge server.');
+  }
+  return new Error(`${method} ${path} -> ${res.status}${detail}`);
+}
+
+async function get(path) {
+  const res = await fetch(`${BASE}/api${path}`, { headers: headers() });
+  if (!res.ok) throw await fail('GET', path, res);
   return res.json();
 }
 
-// Reads — return exactly the shapes the current components already expect.
+async function send(method, path, body) {
+  const res = await fetch(`${BASE}/api${path}`, {
+    method,
+    headers: headers({ 'Content-Type': 'application/json' }),
+    body: body == null ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw await fail(method, path, res);
+  return res.json();
+}
+
+/**
+ * True when the app is pointed at the read-only cloud tier, so the UI can hide
+ * or disable controls that would only produce a 405. An empty VITE_API_URL
+ * means same-origin, which is only ever the Vercel deployment; the edge server
+ * is always reached through an explicit host.
+ */
+export const isReadOnlyTier = BASE === '';
+
+// ── Reads ───────────────────────────────────────────────────────────────────
+
 export const fetchDevices = () => get('/devices');
 export const fetchNotifications = () => get('/notifications');
 export const fetchFormulas = () => get('/formulas');
 export const fetchChannelAssignments = () => get('/channel-assignments');
 export const fetchMapSensors = () => get('/map-sensors');
 
-// Writes.
+// Recent command log (with latest ack status), optionally scoped to one device.
+export const fetchCommands = (deviceId) =>
+  get(`/commands${deviceId ? `?device=${encodeURIComponent(deviceId)}` : ''}`);
+
+// ── Writes (edge tier only — 405 on cloud) ──────────────────────────────────
+
 export const markAllNotificationsRead = () => send('POST', '/notifications/read-all');
 export const markNotificationRead = (id) => send('POST', `/notifications/${id}/read`);
 export const createFormula = (label, formula) => send('POST', '/formulas', { label, formula });
@@ -39,6 +133,7 @@ export const assignChannel = (board, channel, formulaLabel) =>
 export const saveMapSensors = (sensors) => send('PUT', '/map-sensors', sensors);
 
 // ── Renames (persist to the DB; response echoes the updated device) ─────────
+
 export const renameDevice = (deviceId, name) =>
   send('PATCH', `/devices/${encodeURIComponent(deviceId)}`, { name });
 export const renameModule = (deviceId, moduleId, name) =>
@@ -86,21 +181,3 @@ export const busRecovery = (deviceId, busId = 0) =>
 // direction: 'up' (enable) | 'down' (disable). chip 0..3 (0x48..0x4B), ch 0..3.
 export const sensorPortToggle = (deviceId, direction, chip, ch) =>
   sendCommand(deviceId, `sensor_port_${direction}`, { chip, ch });
-
-// Recent command log (with latest ack status), optionally scoped to one device.
-export const fetchCommands = (deviceId) =>
-  get(`/commands${deviceId ? `?device=${encodeURIComponent(deviceId)}` : ''}`);
-
-// Example wiring for DeviceOverview.jsx:
-//
-//   import { useEffect, useState } from 'react';
-//   import { fetchDevices } from '../api';
-//
-//   const [devices, setDevices] = useState([]);
-//   useEffect(() => {
-//     fetchDevices().then(setDevices).catch(console.error);
-//     const id = setInterval(() => fetchDevices().then(setDevices), 3000); // live poll
-//     return () => clearInterval(id);
-//   }, []);
-//
-// Everything below that (`.map()` over devices -> modules -> ports) stays as-is.
