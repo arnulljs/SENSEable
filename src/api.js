@@ -21,7 +21,7 @@
 // exported functions. App.jsx calls setTenant() whenever the signed-in
 // organization changes; every request after that carries x-tenant-id.
 
-const BASE = import.meta.env?.VITE_API_URL ?? 'http://localhost:4000';
+const BASE = import.meta.env?.VITE_API_URL || (import.meta.env?.PROD ? '' : 'http://localhost:4000');
 
 // ── Tenant scoping ──────────────────────────────────────────────────────────
 
