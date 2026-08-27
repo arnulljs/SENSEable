@@ -9,6 +9,7 @@ import Team from './pages/Team';
 import LoginPage from './pages/LoginPage';
 import CreateAccountPage from './pages/CreateAccountPage';
 import { useAuth } from './context/AuthContext';
+import { connectRealtime } from './realtime';
 import {
   devices as seedDevices,
   notifications as allNotifications,
@@ -168,6 +169,7 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    let pollId = null;
 
     // Declare the tenant BEFORE the first fetch. The cloud tier fails closed:
     // an unscoped read is a 400, not an empty list, so a request that races
@@ -175,22 +177,51 @@ export default function App() {
     setTenant(tenantSlug);
     if (!tenantSlug) return () => { alive = false; };
 
+    // Socket frames and REST responses carry the identical projectDevices()
+    // shape, so both land here and the merge doesn't care which arrived.
+    const apply = (backend) => {
+      if (!alive) return;
+      // Functional update: always merge against the freshest local state,
+      // including an Edit Sensor change the user made mid-poll.
+      setAllDevicesState(prev => mergeTelemetry(prev, backend));
+    };
+
     async function pull() {
-      try {
-        const backend = await fetchDevices();
-        if (!alive) return;
-        // Functional update: always merge against the freshest local state,
-        // including an Edit Sensor change the user made mid-poll.
-        setAllDevicesState(prev => mergeTelemetry(prev, backend));
-      } catch {
-        // Backend offline — leave current state untouched.
-      }
+      try { apply(await fetchDevices()); }
+      catch { /* Backend offline — leave current state untouched. */ }
     }
 
+    // First paint comes from REST regardless: it renders immediately rather
+    // than waiting on a socket handshake, and it's the path that still works
+    // against the read-only cloud tier.
     pull();
-    if (!POLL_MS) return () => { alive = false; };
-    const id = setInterval(pull, POLL_MS);
-    return () => { alive = false; clearInterval(id); };
+
+    const startPolling = () => {
+      if (pollId != null || !POLL_MS) return;
+      pollId = setInterval(pull, POLL_MS);
+    };
+    const stopPolling = () => {
+      if (pollId == null) return;
+      clearInterval(pollId);
+      pollId = null;
+    };
+
+    startPolling();
+
+    // While the socket is live, polling is redundant — the server pushes on
+    // every change. The moment it drops, polling resumes, so a socket failure
+    // costs latency and nothing else.
+    const disconnect = connectRealtime(
+      tenantSlug,
+      apply,
+      (isFallback) => {
+        if (!alive) return;
+        if (isFallback) startPolling();
+        else stopPolling();
+      },
+    );
+
+    return () => { alive = false; stopPolling(); disconnect(); };
   }, [tenantSlug]);
 
   // When set, shows the Sensor Detail view within the home context. Stored
