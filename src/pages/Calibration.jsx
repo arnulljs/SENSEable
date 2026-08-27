@@ -1,5 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { devices as allDevices, savedFormulas as initialFormulas, channelAssignments as initAssignments } from '../mockData';
+import {
+  fetchFormulas, createFormula, deleteFormula as apiDeleteFormula,
+  fetchChannelAssignments, assignChannel as apiAssignChannel,
+  isReadOnlyTier,
+} from '../api';
 
 // ── simple linear regression helper ──────────────────────────────────────────
 function linearRegression(points) {
@@ -84,8 +89,32 @@ export default function Calibration({ devices: devicesProp }) {
   const [guidedLabel, setGuidedLabel]   = useState('');
 
   // ── Manage Formulas state ─────────────────────────────────────────────────
+  // Seeded from mockData so the page renders instantly and still works with no
+  // backend, then hydrated from the API below. The formula bank and channel
+  // assignments are REAL server-side resources (calibration_formulas and the
+  // ports.formula_label column), not local scratch state — a formula saved here
+  // is what the ingest pipeline evaluates against incoming ADC counts, so it has
+  // to persist or the calibration means nothing after a reload.
   const [formulas, setFormulas]           = useState(initialFormulas);
   const [assignments, setAssignments]     = useState(initAssignments);
+  const [syncErr, setSyncErr]             = useState('');
+  const [busy, setBusy]                   = useState(false);
+
+  // Pull the authoritative bank + assignments once on mount. On failure we keep
+  // the seed data and say so, rather than blanking a page the operator may be
+  // mid-calibration on.
+  const hydrate = useCallback(async () => {
+    try {
+      const [f, a] = await Promise.all([fetchFormulas(), fetchChannelAssignments()]);
+      if (Array.isArray(f)) setFormulas(f);
+      if (a && typeof a === 'object') setAssignments(a);
+      setSyncErr('');
+    } catch (e) {
+      setSyncErr(`Showing local data — could not reach the server (${e.message})`);
+    }
+  }, []);
+
+  useEffect(() => { hydrate(); }, [hydrate]);
   // Every board reported by any ESP32 node starts expanded — computed from
   // `devices` rather than a hardcoded board id, so this stays correct
   // regardless of how many boards are actually connected.
@@ -127,19 +156,37 @@ export default function Calibration({ devices: devicesProp }) {
     return `x * ${slope.toExponential(6)} ${op} ${Math.abs(intercept).toExponential(6)}`;
   }
 
-  function saveUnguidedFormula() {
+  // Persist a formula to the bank. Server-first, NOT optimistic: the backend
+  // validates the expression through the hardened mathjs evaluator, and a
+  // formula that looked saved but was rejected would silently produce wrong
+  // engineering values on every subsequent reading. Better to fail visibly.
+  //
+  // POST /formulas upserts by label, so re-saving an existing label edits it —
+  // which is the behaviour the two callers below already assumed locally.
+  async function persistFormula(label, formula) {
+    const saved = await createFormula(label, formula);
+    // Re-read rather than splicing the response in: assignments can change
+    // server-side as a side effect, and the bank is small enough that a round
+    // trip is cheaper than reconciling two sources of truth.
+    await hydrate();
+    return saved;
+  }
+
+  async function saveUnguidedFormula() {
     if (!regression || !formulaLabel.trim()) return;
+    const label = formulaLabel.trim();
     const formula = buildUnguidedFormula();
-    setFormulas(prev => {
-      const idx = prev.findIndex(f => f.label === formulaLabel.trim());
-      if (idx >= 0) {
-        const copy = [...prev]; copy[idx] = { ...copy[idx], formula }; return copy;
-      }
-      return [...prev, { id: Date.now(), label: formulaLabel.trim(), formula }];
-    });
-    setSavedMsg(`"${formulaLabel.trim()}" saved successfully.`);
-    setDataPoints([]); setRegression(null); setFormulaLabel('');
-    setUnitInput(''); setAdcInput('');
+    setBusy(true);
+    try {
+      await persistFormula(label, formula);
+      setSavedMsg(`"${label}" saved successfully.`);
+      setDataPoints([]); setRegression(null); setFormulaLabel('');
+      setUnitInput(''); setAdcInput('');
+    } catch (e) {
+      setSavedMsg(`Could not save "${label}" — ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   // ── Helpers: Guided ──────────────────────────────────────────────────────
@@ -168,29 +215,67 @@ export default function Calibration({ devices: devicesProp }) {
     setGuidedResult(result);
   }
 
-  function saveGuidedFormula() {
+  async function saveGuidedFormula() {
     if (!guidedResult || !guidedLabel.trim()) return;
-    setFormulas(prev => {
-      const idx = prev.findIndex(f => f.label === guidedLabel.trim());
-      if (idx >= 0) {
-        const copy = [...prev]; copy[idx] = { ...copy[idx], formula: guidedResult.formula }; return copy;
-      }
-      return [...prev, { id: Date.now(), label: guidedLabel.trim(), formula: guidedResult.formula }];
-    });
-    setGuidedResult(null); setGuidedLabel('');
-    setG1Known(''); setG1Adc('');
-    setG2Low(''); setG2LowAdc(''); setG2High(''); setG2HighAdc('');
-    setCustomExpr('');
+    const label = guidedLabel.trim();
+    setBusy(true);
+    try {
+      await persistFormula(label, guidedResult.formula);
+      setSavedMsg(`"${label}" saved successfully.`);
+      setGuidedResult(null); setGuidedLabel('');
+      setG1Known(''); setG1Adc('');
+      setG2Low(''); setG2LowAdc(''); setG2High(''); setG2HighAdc('');
+      setCustomExpr('');
+    } catch (e) {
+      setSavedMsg(`Could not save "${label}" — ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   // ── Helpers: Assignments ─────────────────────────────────────────────────
   // Assign (or clear) a formula from the bank directly onto a channel —
   // commits immediately, no separate edit/save step.
-  function assignChannel(boardId, ch, label) {
-    setAssignments(prev => ({
+  // Optimistic here, unlike formula saves: the dropdown is a direct
+  // manipulation control and a lagging select feels broken. The value is also
+  // already known-good (it comes from the bank), so the only failure mode is a
+  // transport error — which we undo.
+  async function assignChannel(boardId, ch, label) {
+    const previous = assignments[boardId]?.[ch] ?? null;
+    const next = label || null;
+    const apply = (v) => setAssignments(prev => ({
       ...prev,
-      [boardId]: { ...(prev[boardId] || {}), [ch]: label || null },
+      [boardId]: { ...(prev[boardId] || {}), [ch]: v },
     }));
+
+    apply(next);
+    try {
+      await apiAssignChannel(boardId, ch, next);
+    } catch (e) {
+      apply(previous);
+      setSyncErr(`Could not assign ${ch} — ${e.message}`);
+    }
+  }
+
+  // Delete a formula from the bank.
+  //
+  // The cascade matters: the backend clears the formula_label from any port
+  // that referenced it, so a channel can never be left pointing at a formula
+  // that no longer exists — which would leave the ingest pipeline with no way
+  // to convert that channel's ADC counts. We re-read afterwards rather than
+  // mirroring that cascade locally, because the server is the one that knows
+  // which ports were actually touched.
+  async function removeFormula(f) {
+    setBusy(true);
+    try {
+      await apiDeleteFormula(f.id);
+      await hydrate();
+      setSyncErr('');
+    } catch (e) {
+      setSyncErr(`Could not delete "${f.label}" — ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   // ── Derived ──────────────────────────────────────────────────────────────
@@ -209,6 +294,26 @@ export default function Calibration({ devices: devicesProp }) {
       </div>
 
       <div className="page-body">
+        {isReadOnlyTier && (
+          <div style={{
+            marginBottom: 12, padding: '9px 12px', borderRadius: 6,
+            background: 'rgba(37,99,235,0.08)', border: '1px solid rgba(37,99,235,0.25)',
+            fontSize: 12.5, color: 'var(--text-2)',
+          }}>
+            <strong>Remote monitoring view.</strong> Calibration is applied on the
+            on-site server, which owns the sensors. You can review the formula bank
+            and channel assignments here, but not change them.
+          </div>
+        )}
+        {syncErr && (
+          <div style={{
+            marginBottom: 12, padding: '9px 12px', borderRadius: 6,
+            background: 'rgba(234,179,8,0.10)', border: '1px solid rgba(234,179,8,0.30)',
+            fontSize: 12.5, color: 'var(--text-2)',
+          }}>
+            {syncErr}
+          </div>
+        )}
         <div className="cal-layout">
 
           {/* ── LEFT: Calibration Module ──────────────────────────────── */}
@@ -347,8 +452,8 @@ export default function Calibration({ devices: devicesProp }) {
                   </div>
 
                   <button className="cal-primary-btn" onClick={saveUnguidedFormula}
-                    disabled={!regression || !formulaLabel.trim()}>
-                    Save ADC Formula
+                    disabled={!regression || !formulaLabel.trim() || busy || isReadOnlyTier}>
+                    {busy ? 'Saving…' : 'Save ADC Formula'}
                   </button>
 
                   {savedMsg && (
@@ -469,8 +574,8 @@ export default function Calibration({ devices: devicesProp }) {
                         value={guidedLabel} onChange={e => setGuidedLabel(e.target.value)}
                         style={{ marginBottom: 8 }} />
                       <button className="cal-primary-btn" onClick={saveGuidedFormula}
-                        disabled={!guidedLabel.trim()}>
-                        Save ADC Formula
+                        disabled={!guidedLabel.trim() || busy || isReadOnlyTier}>
+                        {busy ? 'Saving…' : 'Save ADC Formula'}
                       </button>
                     </>
                   )}
@@ -508,6 +613,7 @@ export default function Calibration({ devices: devicesProp }) {
                             className="input-field"
                             style={{ width: 150, padding: '3px 7px', fontSize: 12 }}
                             value={assigned ?? ''}
+                            disabled={busy || isReadOnlyTier}
                             onChange={e => assignChannel(board.id, ch, e.target.value)}
                           >
                             <option value="">— Unassigned —</option>
@@ -548,21 +654,8 @@ export default function Calibration({ devices: devicesProp }) {
                           <td className="formula-code">{f.formula}</td>
                           <td>
                             <button className="dp-del" title="Delete"
-                              onClick={() => {
-                                setFormulas(prev => prev.filter(x => x.id !== f.id));
-                                // Clear this formula from any channel it was assigned to,
-                                // so no dropdown is left pointing at a deleted formula.
-                                setAssignments(prev => {
-                                  const next = {};
-                                  Object.entries(prev).forEach(([boardId, chs]) => {
-                                    next[boardId] = {};
-                                    Object.entries(chs).forEach(([ch, label]) => {
-                                      next[boardId][ch] = label === f.label ? null : label;
-                                    });
-                                  });
-                                  return next;
-                                });
-                              }}>
+                              disabled={busy || isReadOnlyTier}
+                              onClick={() => removeFormula(f)}>
                               ✕
                             </button>
                           </td>

@@ -26,6 +26,7 @@ import {
   removeModule as apiRemoveModule,
   removePort as apiRemovePort,
   setPortEnabled as apiSetPortEnabled,
+  isReadOnlyTier,
 } from './api';
 import './App.css';
 
@@ -325,6 +326,7 @@ export default function App() {
   // local device/module names between polls and a page reload re-seeds names
   // straight from the DB, the rename is durable across sessions.
   async function renameDeviceName(deviceId, name) {
+    assertWritable('Renaming a device');
     const old = allDevicesState.find(d => d.id === deviceId)?.name;
     setAllDevicesState(prev => prev.map(d => (d.id === deviceId ? { ...d, name } : d)));
     try {
@@ -336,6 +338,7 @@ export default function App() {
   }
 
   async function renameModuleName(deviceId, moduleId, name) {
+    assertWritable('Renaming a board');
     const old = allDevicesState.find(d => d.id === deviceId)
       ?.modules.find(m => m.id === moduleId)?.name;
     const patch = (nm) => (d) => (d.id !== deviceId ? d : {
@@ -351,6 +354,7 @@ export default function App() {
   }
 
   async function renameActuatorName(deviceId, actuatorId, name) {
+    assertWritable('Renaming an actuator');
     const old = allDevicesState.find(d => d.id === deviceId)
       ?.actuators?.find(a => a.id === actuatorId)?.name;
     const patch = (nm) => (d) => (d.id !== deviceId ? d : {
@@ -365,12 +369,35 @@ export default function App() {
     }
   }
 
+  // ── Read-only tier guard ───────────────────────────────────────────────
+  // The cloud deployment serves a Supabase read replica: its api/ directory
+  // contains only GET handlers, so every write below is refused there. Refusing
+  // HERE rather than letting the request go out matters because most of these
+  // handlers update local state optimistically — without this the UI would
+  // apply the change, fire a doomed request, then revert, which reads as a bug
+  // instead of as the deliberate edge/cloud split it is.
+  //
+  // This is not a permission check. Authority genuinely lives on the on-site
+  // server, which owns the broker and the hardware; the cloud tier is for
+  // remote viewing.
+  function assertWritable(action) {
+    if (!isReadOnlyTier) return;
+    throw new Error(
+      `${action} is not available on the remote monitoring view. ` +
+      'This deployment reads a replica; changes are made on the on-site server, ' +
+      'which owns the hardware and the broker.');
+  }
+
   // ── Enabling / disabling a channel ─────────────────────────────────────
   // Optimistic, because the operator is asserting a fact about the physical
   // world ("nothing is plugged into A2") rather than requesting something that
   // might be refused. The backend records it unconditionally; only a network
   // failure can undo it, and then we put the flag back.
   async function setPortEnabledEntry(deviceId, moduleId, portId, enabled, reason) {
+    // Before the optimistic update, not after: otherwise the toggle flips, a
+    // doomed request goes out, and it snaps back.
+    assertWritable('Switching a channel off');
+
     const patch = (on) => (d) => (d.id !== deviceId ? d : {
       ...d,
       modules: d.modules.map(m => (m.id !== moduleId ? m : {
@@ -395,11 +422,13 @@ export default function App() {
   // succeed BEFORE touching local state. Optimistically dropping the row first
   // would make a refused delete look like it worked until the next poll.
   async function removeDeviceEntry(deviceId) {
+    assertWritable('Removing a device');
     await apiRemoveDevice(deviceId);
     setAllDevicesState(prev => prev.filter(d => d.id !== deviceId));
   }
 
   async function removeModuleEntry(deviceId, moduleId) {
+    assertWritable('Removing a board');
     await apiRemoveModule(deviceId, moduleId);
     setAllDevicesState(prev => prev.map(d => (d.id !== deviceId ? d : {
       ...d, modules: d.modules.filter(m => m.id !== moduleId),
@@ -407,6 +436,7 @@ export default function App() {
   }
 
   async function removePortEntry(deviceId, moduleId, portId) {
+    assertWritable('Removing a channel');
     await apiRemovePort(deviceId, moduleId, portId);
     setAllDevicesState(prev => prev.map(d => (d.id !== deviceId ? d : {
       ...d,
@@ -417,6 +447,11 @@ export default function App() {
   }
 
   function commandActuator(deviceId, actuatorId, out) {
+    // Returns null rather than throwing: ActuatorCard already treats a null
+    // packet as "command not sent", so this reuses that path instead of
+    // surfacing an exception from inside a click handler.
+    if (isReadOnlyTier) return null;
+
     const device = allDevicesState.find(d => d.id === deviceId);
     const actuator = device?.actuators?.find(a => a.id === actuatorId);
     if (!device || !actuator) return null;
@@ -490,7 +525,7 @@ export default function App() {
             devices={orgDevices}
             onSelectSensor={handleSelectSensor}
             canEditMap={isDesigner}
-            canEdit={isDesigner}
+            canEdit={isDesigner && !isReadOnlyTier}
             onRenameDevice={renameDeviceName}
             onRenameModule={renameModuleName}
             onRemoveDevice={removeDeviceEntry}
@@ -521,7 +556,7 @@ export default function App() {
             devices={orgDevices}
             onSelectSensor={handleSelectSensor}
             canEditMap={isDesigner}
-            canEdit={isDesigner}
+            canEdit={isDesigner && !isReadOnlyTier}
             onRenameDevice={renameDeviceName}
             onRenameModule={renameModuleName}
             onRemoveDevice={removeDeviceEntry}
@@ -542,7 +577,7 @@ export default function App() {
       case 'calibration':
         return <Calibration devices={orgDevices} />;
       case 'control':
-        return <Actuators devices={orgDevices} onCommandActuator={commandActuator} canEdit={isDesigner} onRenameActuator={renameActuatorName} />;
+        return <Actuators devices={orgDevices} onCommandActuator={commandActuator} canEdit={isDesigner && !isReadOnlyTier} onRenameActuator={renameActuatorName} />;
       case 'team':
         return <Team />;
       default:
@@ -551,7 +586,7 @@ export default function App() {
             devices={orgDevices}
             onSelectSensor={handleSelectSensor}
             canEditMap={isDesigner}
-            canEdit={isDesigner}
+            canEdit={isDesigner && !isReadOnlyTier}
             onRenameDevice={renameDeviceName}
             onRenameModule={renameModuleName}
             onRemoveDevice={removeDeviceEntry}

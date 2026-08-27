@@ -21,7 +21,7 @@
 // exported functions. App.jsx calls setTenant() whenever the signed-in
 // organization changes; every request after that carries x-tenant-id.
 
-const BASE = import.meta.env?.VITE_API_URL || (import.meta.env?.PROD ? '' : 'http://localhost:4000');
+const BASE = import.meta.env?.VITE_API_URL ?? 'http://localhost:4000';
 
 // ── Tenant scoping ──────────────────────────────────────────────────────────
 
@@ -43,6 +43,14 @@ export function setTenant(slug) {
 export function getTenant() {
   return currentTenant;
 }
+
+/**
+ * True when the app is pointed at the read-only cloud tier, so the UI can hide
+ * or disable controls that would only produce a 405. An empty VITE_API_URL
+ * means same-origin, which is only ever the Vercel deployment; the edge server
+ * is always reached through an explicit host.
+ */
+export const isReadOnlyTier = BASE === '';
 
 // ── Transport ───────────────────────────────────────────────────────────────
 
@@ -72,15 +80,21 @@ async function fail(method, path, res) {
       `${method} ${path} — no organization selected. ` +
       'The API is tenant-scoped and refuses unscoped reads.');
   }
+  // READ-ONLY CHECK MUST COME FIRST. The cloud tier's api/ directory contains
+  // only GET handlers, so a PATCH/POST/DELETE never reaches readHandler's 405 —
+  // Vercel has no route for it and answers 404. Testing for the tenant case
+  // first therefore blamed a perfectly healthy tenant for what is really "this
+  // deployment doesn't accept writes", which is exactly the wrong thing to tell
+  // someone whose dashboard is streaming that tenant's live data.
+  if (res.status === 405 || (isReadOnlyTier && method !== 'GET')) {
+    return new Error(
+      `${method} ${path} — this is the remote monitoring view, which is read-only. ` +
+      'Channel changes, calibration and commands are made on the on-site server.');
+  }
   if (res.status === 404 && currentTenant) {
     return new Error(
       `${method} ${path} — organization '${currentTenant}' has no data on this tier. ` +
       'It may exist only in this browser and never have been provisioned server-side.');
-  }
-  if (res.status === 405) {
-    return new Error(
-      `${method} ${path} — this tier is read-only. ` +
-      'Writes require the on-site edge server.');
   }
   return new Error(`${method} ${path} -> ${res.status}${detail}`);
 }
@@ -100,14 +114,6 @@ async function send(method, path, body) {
   if (!res.ok) throw await fail(method, path, res);
   return res.json();
 }
-
-/**
- * True when the app is pointed at the read-only cloud tier, so the UI can hide
- * or disable controls that would only produce a 405. An empty VITE_API_URL
- * means same-origin, which is only ever the Vercel deployment; the edge server
- * is always reached through an explicit host.
- */
-export const isReadOnlyTier = BASE === '';
 
 // ── Reads ───────────────────────────────────────────────────────────────────
 
