@@ -112,8 +112,35 @@ export function AuthProvider({ children }) {
     return { ok: true };
   }, [users]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Clearing the in-memory user id is not enough. The session id is persisted to
+  // localStorage so a reload keeps you signed in — which means dropping only the
+  // React state leaves the credential on disk, and the next visitor to that
+  // browser is silently signed back in as the previous user. On a shared machine
+  // (a lab bench, a greenhouse terminal) that is the realistic threat.
+  //
+  // So: clear the session key, then sweep any other app-scoped keys that could
+  // identify the previous session, and clear sessionStorage wholesale since
+  // nothing there is meant to outlive a session by definition.
+  //
+  // NOTE: there is no server-side token to invalidate, because this is mock
+  // auth with no server session. Once real authentication exists, this function
+  // must also call the backend to revoke the token — clearing the client alone
+  // would leave a still-valid credential in anyone's network capture.
   const logout = useCallback(() => {
     setCurrentUserId(null);
+    try {
+      window.localStorage.removeItem(SESSION_KEY);
+      // Anything else this app wrote that is tied to who was signed in.
+      for (const key of Object.keys(window.localStorage)) {
+        if (key.startsWith('senseful_map_profile') || key.startsWith('senseful_session')) {
+          window.localStorage.removeItem(key);
+        }
+      }
+      window.sessionStorage.clear();
+    } catch {
+      // Storage disabled or full — the in-memory state is already cleared, so
+      // this tab is signed out regardless.
+    }
   }, []);
 
   // Tier 1 (Service Provider) is the one who normally provisions the first
