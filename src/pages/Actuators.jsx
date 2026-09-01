@@ -78,7 +78,22 @@ function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }
   function setPower(state) { send({ ...base, state: state ? 1 : 0 }); }
   function setMode(mode)   { send({ ...base, mode }); }
   function commitDuty()    { send({ ...base, duty }); }         // slider release
-  function setDur(dur)     { send({ ...base, dur: Math.max(0, Number(dur) || 0) }); }
+
+  // UNITS. The wire protocol carries `dur` in MILLISECONDS — the firmware does
+  // vTaskDelay(pdMS_TO_TICKS(dur)) directly. The field is labelled "sec"
+  // because seconds is the unit an operator actually thinks in ("run the pump
+  // for 30 seconds"), so the conversion happens HERE, at the UI boundary, and
+  // the frozen wire format is untouched.
+  //
+  // Before this, the label said "sec" while the raw value went straight to the
+  // firmware as milliseconds: typing 10 gave a 10 ms pulse, not 10 seconds.
+  // That is the dangerous direction to be wrong in — a dose or aeration window
+  // silently a thousand times shorter than intended looks like the actuator
+  // simply didn't fire.
+  function setDurSeconds(sec) {
+    const seconds = Math.max(0, Number(sec) || 0);
+    send({ ...base, dur: Math.round(seconds * 1000) });
+  }
 
   return (
     <div className="cal-card" style={{ padding: 16 }}>
@@ -135,12 +150,14 @@ function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }
         </div>
       )}
 
-      {/* Auto-off window (dur, seconds). 0 = hold until next command. */}
+      {/* Auto-off window. Displayed in seconds, sent in milliseconds — see
+          setDurSeconds() above. 0 = hold until the next command. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
         <span style={{ fontSize: 12, color: 'var(--text-2)', width: 48 }}>Auto-off</span>
         <input
-          className="input-field" type="number" min={0} value={a.dur}
-          onChange={e => setDur(e.target.value)}
+          className="input-field" type="number" min={0} step={0.1}
+          value={a.dur ? a.dur / 1000 : 0}
+          onChange={e => setDurSeconds(e.target.value)}
           style={{ width: 90, padding: '4px 8px', fontSize: 12 }}
         />
         <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>sec (0 = hold)</span>
