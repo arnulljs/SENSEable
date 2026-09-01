@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import DeviceOverview from './pages/DeviceOverview';
 import SensorDetail from './pages/SensorDetail';
@@ -27,12 +27,18 @@ import {
   removePort as apiRemovePort,
   setPortEnabled as apiSetPortEnabled,
   isReadOnlyTier,
+  fetchNotifications,
+  markNotificationRead as apiMarkNotificationRead,
+  markAllNotificationsRead as apiMarkAllNotificationsRead,
 } from './api';
 import './App.css';
 
 // How often to pull fresh readings from the backend. 0 = fetch once on load
 // and never poll.
 const POLL_MS = 3000;
+// Notifications change far less often than telemetry and are not pushed over
+// the socket, so they get their own slower poll rather than riding the 3s one.
+const NOTIF_POLL_MS = 15000;
 
 // Merge live backend telemetry into App's device state WITHOUT clobbering
 // sensor CONFIG. Division of ownership:
@@ -243,15 +249,64 @@ export default function App() {
     () => (tenantSlug ? allDevicesState.filter(d => d.tenantId === tenantSlug) : []),
     [allDevicesState, tenantSlug]
   );
+  // Notifications come from the backend, which raises them when a port crosses
+  // its safe_min/safe_max. Seeded from mockData so the page renders instantly
+  // and still shows something if the API is unreachable, then replaced.
+  //
+  // Filtered on the SLUG, matching orgDevices above: read.js returns
+  // tenantId as tenants.slug, not the AuthContext org id. Those happen to be
+  // equal for the two seeded orgs, which is why the old id comparison appeared
+  // to work — but an org created through the UI gets a generated id and would
+  // have silently shown zero notifications.
+  const [allNotificationsState, setAllNotificationsState] = useState(allNotifications);
+
+  const pullNotifications = useCallback(async () => {
+    try {
+      const list = await fetchNotifications();
+      if (Array.isArray(list)) setAllNotificationsState(list);
+    } catch {
+      // Backend unreachable — keep whatever we last had rather than blanking
+      // the page, which would read as "no alerts" and is the wrong thing to
+      // tell an operator.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!tenantSlug) return;
+    pullNotifications();
+    const id = setInterval(pullNotifications, NOTIF_POLL_MS);
+    return () => clearInterval(id);
+  }, [tenantSlug, pullNotifications]);
+
   const orgNotifications = useMemo(
-    () => (currentOrg ? allNotifications.filter(n => n.tenantId === currentOrg.id) : []),
-    [currentOrg]
+    () => (tenantSlug ? allNotificationsState.filter(n => n.tenantId === tenantSlug) : []),
+    [allNotificationsState, tenantSlug]
   );
 
-  // Unread notification badge count — seeded from the org-scoped list so
-  // switching accounts doesn't carry over another organization's count.
-  const [unreadCount, setUnreadCount] = useState(
-    () => orgNotifications.filter(n => !n.read).length
+  // Server-first: a notification that looked read but wasn't would come back on
+  // the next poll, which is more confusing than a brief delay.
+  async function markNotificationReadEntry(id) {
+    if (isReadOnlyTier) return;
+    setAllNotificationsState(prev => prev.map(n => (n.id === id ? { ...n, read: true } : n)));
+    try { await apiMarkNotificationRead(id); }
+    catch { pullNotifications(); }          // reconcile against the server
+  }
+
+  async function markAllNotificationsReadEntry() {
+    if (isReadOnlyTier) return;
+    setAllNotificationsState(prev => prev.map(n => ({ ...n, read: true })));
+    try { await apiMarkAllNotificationsRead(); }
+    catch { pullNotifications(); }
+  }
+
+  // Derived, not state. A useState initializer runs ONCE, so the badge was
+  // frozen at whatever the count happened to be on first render: new alerts
+  // arriving from the backend never incremented it, and marking one read never
+  // decremented it. Deriving from the org-scoped list keeps it correct on every
+  // change, and switching accounts recomputes it for free.
+  const unreadCount = useMemo(
+    () => orgNotifications.filter(n => !n.read).length,
+    [orgNotifications]
   );
 
   function handleNavigate(page) {
@@ -571,7 +626,9 @@ export default function App() {
         return (
           <Notifications
             notifications={orgNotifications}
-            onMarkAllRead={() => setUnreadCount(0)}
+            onMarkRead={markNotificationReadEntry}
+            readOnly={isReadOnlyTier}
+            onMarkAllRead={markAllNotificationsReadEntry}
           />
         );
       case 'calibration':

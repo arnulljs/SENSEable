@@ -1,5 +1,4 @@
 // Notifications.jsx — System notifications list
-import { useState } from 'react';
 import { notifications as allNotifications } from '../mockData';
 
 const ICONS = {
@@ -9,18 +8,33 @@ const ICONS = {
   fault:   '🔴',
 };
 
-// `notifications` arrives pre-filtered to the signed-in org by App.jsx,
-// with a fallback to the raw mockData import for standalone use.
-export default function Notifications({ notifications: notificationsProp, onMarkAllRead }) {
-  const [notifs, setNotifs] = useState(notificationsProp ?? allNotifications);
+// `notifications` arrives pre-filtered to the signed-in org by App.jsx and is
+// fetched from the backend, which raises a notification when a port crosses its
+// configured safe range. The mockData import remains only as a standalone
+// fallback for rendering this page in isolation.
+//
+// The list is rendered straight from props rather than copied into state. It
+// used to be `useState(notificationsProp ?? allNotifications)`, and a useState
+// initializer runs ONCE — so the component kept its first-render snapshot
+// forever. New alerts arriving from the backend never appeared, and the page
+// silently showed a stale list while the database had unread threshold
+// breaches on it. Read state is owned by App.jsx, which persists it.
+export default function Notifications({
+  notifications: notificationsProp,
+  onMarkRead,
+  onMarkAllRead,
+  readOnly = false,
+}) {
+  const notifs = notificationsProp ?? allNotifications;
 
   function markAllRead() {
-    setNotifs(prev => prev.map(n => ({ ...n, read: true })));
+    if (readOnly) return;
     onMarkAllRead?.();
   }
 
   function markRead(id) {
-    setNotifs(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    if (readOnly) return;
+    onMarkRead?.(id);
   }
 
   const unread = notifs.filter(n => !n.read).length;
@@ -40,7 +54,7 @@ export default function Notifications({ notifications: notificationsProp, onMark
               </span>
             )}
           </h1>
-          {unread > 0 && (
+          {unread > 0 && !readOnly && (
             <button className="btn-ghost" onClick={markAllRead}>
               Mark all as read
             </button>
