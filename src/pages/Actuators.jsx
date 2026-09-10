@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { macSuffixOf } from '../api';
 import { devices as allDevices, buildActuatorCommand, clampDuty, dutyPct } from '../mockData';
 import EditableName from '../components/EditableName';
 
@@ -296,7 +297,16 @@ export default function Actuators({ devices: devicesProp, onCommandActuator, can
                 <span className={`status-dot ${device.status}`} />
                 <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-1)' }}>{device.name}</span>
                 <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>
-                  {device.nodeId} · {device.commMode}
+                  {device.nodeId}
+                  {macSuffixOf(device.nodeId) && (
+                    // The id encodes the ESP32's MAC, so show the bytes it came
+                    // from. Two nodes named NODE-A1B2C3 and NODE-A1B2D7 differ by
+                    // one character in the id but are obviously distinct boards
+                    // once the MAC is visible — which matters when an operator is
+                    // standing in front of a rack deciding which one to unplug.
+                    <> · MAC …{macSuffixOf(device.nodeId)}</>
+                  )}
+                  {' · '}{device.commMode}
                   {device.rssi ? ` · ${device.rssi} dBm` : ''}
                 </span>
                 <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--text-3)' }}>

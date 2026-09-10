@@ -169,6 +169,36 @@ export const removeModule = (deviceId, moduleId) =>
 export const removePort = (deviceId, moduleId, portId) =>
   send('DELETE', `/devices/${encodeURIComponent(deviceId)}/modules/${encodeURIComponent(moduleId)}/ports/${encodeURIComponent(portId)}`);
 
+// ── Device replacement (MAC-derived node identity) ──────────────────────────
+// The firmware now derives its node id from the ESP32's MAC address, so a
+// replaced board — or an upgrade from the old hardcoded "N001" — arrives as a
+// NEW device. Auto-provisioning brings it up within seconds, but the labels,
+// safe ranges and calibration assignments the operator built stay attached to
+// the retired one. These move that configuration across, matching channels by
+// physical position (board address + port code) since the UUIDs differ.
+export const fetchReplacements = (deviceId) =>
+  get(`/devices/${encodeURIComponent(deviceId)}/replacements`);
+
+// Dry run — a migration overwrites the target's configuration, so the operator
+// sees what would move before agreeing to it.
+export const previewMigration = (deviceId, targetId) =>
+  send('POST', `/devices/${encodeURIComponent(deviceId)}/migrate/preview`, { targetId });
+
+export const migrateDevice = (deviceId, targetId, { removeSource = false } = {}) =>
+  send('POST', `/devices/${encodeURIComponent(deviceId)}/migrate`, { targetId, removeSource });
+
+/**
+ * Render a MAC-derived node id as the MAC bytes it encodes, for display next to
+ * the id. Returns null for legacy ids like "N001" — the caller's cue to show
+ * nothing rather than a misleading placeholder.
+ */
+export function macSuffixOf(nodeId) {
+  const m = /^NODE-([0-9A-Fa-f]{6})$/.exec(nodeId ?? '');
+  if (!m) return null;
+  const h = m[1].toUpperCase();
+  return `${h.slice(0, 2)}:${h.slice(2, 4)}:${h.slice(4, 6)}`;
+}
+
 // ── Downward commands (actuate / bus_recovery / sensor_port_up|down) ─────────
 // The backend resolves the broker `tid` from tenants.mqtt_tid, builds the exact
 // wire envelope, logs it (cid), and publishes to usc/thesis/{tid}/{nid}/cmd if a
