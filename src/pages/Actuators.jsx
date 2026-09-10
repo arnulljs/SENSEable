@@ -51,48 +51,74 @@ function seg(active, activeBg = 'var(--blue)', activeFg = '#fff') {
 
 function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }) {
   const a = actuator;
-  const isPwm = a.mode === 'pwm';
   const isOn = a.state === 1;
 
-  // Draft duty is local so dragging the slider is smooth; the command only
-  // fires on release (pointer up / keyboard). If the committed duty changes
-  // upstream (e.g. another command patched it), re-sync during render using
-  // the previous-prop pattern — no effect, so no cascading render.
-  const [duty, setDuty] = useState(a.duty);
-  const [prevDuty, setPrevDuty] = useState(a.duty);
-  if (prevDuty !== a.duty) {
-    setPrevDuty(a.duty);
-    setDuty(a.duty);
+  // ── Staged settings, explicit send ────────────────────────────────────────
+  //
+  // Every control here used to publish immediately: clicking a mode, releasing
+  // the slider, and EVERY KEYSTROKE in the auto-off box. Typing "15" issued
+  // three separate commands (1, then 15, plus whatever leading zero the number
+  // input produced), which is why the field showed "015" and why the command
+  // rate limiter tripped during ordinary use.
+  //
+  // Worse than the noise: each intermediate value was a real actuation. Typing
+  // "30" briefly commanded a 3-second window before the 30-second one. On a
+  // dosing pump that is not a cosmetic problem.
+  //
+  // So the card now stages changes locally and sends ONCE, when the operator
+  // says to. That matches how the hardware is actually used — set the duty and
+  // the duration, THEN start the pump — and it makes the packet the operator
+  // reviews the packet that gets sent.
+  const [draft, setDraft] = useState({
+    mode: a.mode,
+    duty: a.duty,
+    durSec: a.dur ? a.dur / 1000 : 0,
+  });
+
+  // Re-sync when the device reports something we didn't stage — an ack landing,
+  // or another operator commanding the same output. Previous-prop pattern, so
+  // no effect and no cascading render.
+  const [prevCommitted, setPrevCommitted] = useState({ mode: a.mode, duty: a.duty, dur: a.dur });
+  if (prevCommitted.mode !== a.mode || prevCommitted.duty !== a.duty || prevCommitted.dur !== a.dur) {
+    setPrevCommitted({ mode: a.mode, duty: a.duty, dur: a.dur });
+    setDraft({ mode: a.mode, duty: a.duty, durSec: a.dur ? a.dur / 1000 : 0 });
   }
 
   const [showCmd, setShowCmd] = useState(false);
   const [lastPacket, setLastPacket] = useState(null);
 
-  function send(out) {
-    const packet = onCommand(device.id, a.id, out);
+  const isPwm = draft.mode === 'pwm';
+
+  // Is there anything staged that the device hasn't been told about?
+  const dirty =
+    draft.mode !== a.mode ||
+    (draft.mode === 'pwm' && draft.duty !== a.duty) ||
+    Math.round(draft.durSec * 1000) !== a.dur;
+
+  // UNITS: the wire protocol carries `dur` in MILLISECONDS — the firmware does
+  // vTaskDelay(pdMS_TO_TICKS(dur)). The operator thinks in seconds ("run the
+  // pump for 30 seconds"), so the conversion happens here at the UI boundary
+  // and the frozen wire format is untouched.
+  function send(state) {
+    const stopping = state === 0;
+
+    // In PWM mode the firmware does NOT read `state` — it derives on/off from
+    // the duty alone (`actuator_active_state = duty_val > 0`). So a stop that
+    // carried the staged duty would set that duty and drive the output straight
+    // back on, which is exactly what happened: the UI showed OFF optimistically,
+    // the ack came back "started", and the toggle flipped again.
+    //
+    // A stop therefore sends duty 0. It also sends dur 0, because an auto-off
+    // window on a command whose whole purpose is to stop is meaningless — and
+    // arming a timer here is how the earlier dur=1 workaround accidentally
+    // became the only way to turn something off.
+    const packet = onCommand(device.id, a.id, {
+      mode: draft.mode,
+      state,
+      duty: draft.mode === 'pwm' ? (stopping ? 0 : clampDuty(draft.duty)) : undefined,
+      dur: stopping ? 0 : Math.round(Math.max(0, Number(draft.durSec) || 0) * 1000),
+    });
     if (packet) setLastPacket(packet);
-  }
-
-  const base = { mode: a.mode, state: a.state, duty, dur: a.dur };
-
-  function setPower(state) { send({ ...base, state: state ? 1 : 0 }); }
-  function setMode(mode)   { send({ ...base, mode }); }
-  function commitDuty()    { send({ ...base, duty }); }         // slider release
-
-  // UNITS. The wire protocol carries `dur` in MILLISECONDS — the firmware does
-  // vTaskDelay(pdMS_TO_TICKS(dur)) directly. The field is labelled "sec"
-  // because seconds is the unit an operator actually thinks in ("run the pump
-  // for 30 seconds"), so the conversion happens HERE, at the UI boundary, and
-  // the frozen wire format is untouched.
-  //
-  // Before this, the label said "sec" while the raw value went straight to the
-  // firmware as milliseconds: typing 10 gave a 10 ms pulse, not 10 seconds.
-  // That is the dangerous direction to be wrong in — a dose or aeration window
-  // silently a thousand times shorter than intended looks like the actuator
-  // simply didn't fire.
-  function setDurSeconds(sec) {
-    const seconds = Math.max(0, Number(sec) || 0);
-    send({ ...base, dur: Math.round(seconds * 1000) });
   }
 
   return (
@@ -109,7 +135,7 @@ function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }
           />
         </span>
         <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 600, color: isOn ? 'var(--green-text)' : 'var(--text-3)' }}>
-          {isOn ? (isPwm ? `ON · ${dutyPct(a.duty)}%` : 'ON') : 'OFF'}
+          {isOn ? (a.mode === 'pwm' ? `ON · ${dutyPct(a.duty)}%` : 'ON') : 'OFF'}
         </span>
       </div>
 
@@ -118,50 +144,68 @@ function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }
         {a.port} · {a.id} · GPIO {a.gpio}
       </div>
 
-      {/* Mode: PWM vs Binary */}
+      {/* Mode: PWM vs Binary — staged, not sent */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: 12, color: 'var(--text-2)', width: 48 }}>Mode</span>
-        <button style={seg(isPwm)} onClick={() => setMode('pwm')}>PWM</button>
-        <button style={seg(!isPwm)} onClick={() => setMode('bin')}>Binary</button>
+        <button style={seg(isPwm)} onClick={() => setDraft(d => ({ ...d, mode: 'pwm' }))}>PWM</button>
+        <button style={seg(!isPwm)} onClick={() => setDraft(d => ({ ...d, mode: 'bin' }))}>Binary</button>
       </div>
 
-      {/* Power: Off / On */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: isPwm ? 10 : 6 }}>
-        <span style={{ fontSize: 12, color: 'var(--text-2)', width: 48 }}>Power</span>
-        <button style={seg(!isOn, 'var(--gray)', '#fff')} onClick={() => setPower(0)}>Off</button>
-        <button style={seg(isOn, 'var(--green)', '#fff')} onClick={() => setPower(1)}>On</button>
-      </div>
-
-      {/* Duty cycle — PWM only. Ignored/omitted from the command in binary mode. */}
+      {/* Duty cycle — PWM only. Staged; omitted from the command in binary mode. */}
       {isPwm && (
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-2)', marginBottom: 4 }}>
             <span>Duty cycle (8-bit)</span>
-            <strong style={{ color: 'var(--blue)', fontFamily: 'var(--font-mono)' }}>{duty} · ≈{dutyPct(duty)}%</strong>
+            <strong style={{ color: 'var(--blue)', fontFamily: 'var(--font-mono)' }}>
+              {draft.duty} · ≈{dutyPct(draft.duty)}%
+            </strong>
           </div>
           <input
-            type="range" min={0} max={255} value={duty}
-            onChange={e => setDuty(clampDuty(e.target.value))}
-            onMouseUp={commitDuty}
-            onTouchEnd={commitDuty}
-            onKeyUp={commitDuty}
+            type="range" min={0} max={255} value={draft.duty}
+            onChange={e => setDraft(d => ({ ...d, duty: clampDuty(e.target.value) }))}
             style={{ width: '100%', accentColor: 'var(--blue)', cursor: 'pointer' }}
           />
         </div>
       )}
 
-      {/* Auto-off window. Displayed in seconds, sent in milliseconds — see
-          setDurSeconds() above. 0 = hold until the next command. */}
+      {/* Auto-off window, in seconds. 0 = hold until the next command. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
         <span style={{ fontSize: 12, color: 'var(--text-2)', width: 48 }}>Auto-off</span>
         <input
           className="input-field" type="number" min={0} step={0.1}
-          value={a.dur ? a.dur / 1000 : 0}
-          onChange={e => setDurSeconds(e.target.value)}
+          value={draft.durSec}
+          onChange={e => setDraft(d => ({ ...d, durSec: e.target.value }))}
+          onBlur={e => setDraft(d => ({ ...d, durSec: Math.max(0, Number(e.target.value) || 0) }))}
           style={{ width: 90, padding: '4px 8px', fontSize: 12 }}
         />
         <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>sec (0 = hold)</span>
       </div>
+
+      {/* Send. Two explicit verbs rather than a toggle, so the operator states
+          intent — "start with these settings" or "stop" — instead of flipping
+          a switch whose meaning depends on current state. Stop is always
+          enabled and never staged: turning something OFF must never be blocked
+          by unsaved edits. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <button
+          style={{ ...seg(true, 'var(--green)', '#fff'), flex: 1, padding: '7px 0', fontWeight: 700 }}
+          onClick={() => send(1)}
+        >
+          {isOn ? 'Apply / Restart' : 'Start'}
+        </button>
+        <button
+          style={{ ...seg(!isOn, 'var(--gray)', '#fff'), flex: 1, padding: '7px 0', fontWeight: 700 }}
+          onClick={() => send(0)}
+        >
+          Stop
+        </button>
+      </div>
+
+      {dirty && (
+        <div style={{ fontSize: 11, color: 'var(--amber-text, #92400E)', marginBottom: 8 }}>
+          Unsent changes — press Start to apply.
+        </div>
+      )}
 
       {/* Ack + last-updated + command inspector */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--border-light)', paddingTop: 10 }}>
@@ -183,7 +227,7 @@ function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }
         }}>
           {lastPacket
             ? JSON.stringify(lastPacket, null, 2)
-            : '// Issue a command to preview the downlink packet\n// (no broker connected yet — command is not published)'}
+            : '// Configure the output above, then press Start to issue a command.'}
         </pre>
       )}
     </div>
