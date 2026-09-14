@@ -40,10 +40,6 @@ export function setTenant(slug) {
   currentTenant = slug || null;
 }
 
-export function getTenant() {
-  return currentTenant;
-}
-
 /**
  * True when the app is pointed at the read-only cloud tier, so the UI can hide
  * or disable controls that would only produce a 405. An empty VITE_API_URL
@@ -121,11 +117,6 @@ export const fetchDevices = () => get('/devices');
 export const fetchNotifications = () => get('/notifications');
 export const fetchFormulas = () => get('/formulas');
 export const fetchChannelAssignments = () => get('/channel-assignments');
-export const fetchMapSensors = () => get('/map-sensors');
-
-// Recent command log (with latest ack status), optionally scoped to one device.
-export const fetchCommands = (deviceId) =>
-  get(`/commands${deviceId ? `?device=${encodeURIComponent(deviceId)}` : ''}`);
 
 // ── Writes (edge tier only — 405 on cloud) ──────────────────────────────────
 
@@ -133,10 +124,8 @@ export const markAllNotificationsRead = () => send('POST', '/notifications/read-
 export const markNotificationRead = (id) => send('POST', `/notifications/${id}/read`);
 export const createFormula = (label, formula) => send('POST', '/formulas', { label, formula });
 export const deleteFormula = (id) => send('DELETE', `/formulas/${id}`);
-export const fitFormula = (points) => send('POST', '/formulas/fit', { points });
 export const assignChannel = (board, channel, formulaLabel) =>
   send('PUT', `/channel-assignments/${board}/${channel}`, { formulaLabel });
-export const saveMapSensors = (sensors) => send('PUT', '/map-sensors', sensors);
 
 // ── Renames (persist to the DB; response echoes the updated device) ─────────
 
@@ -169,24 +158,6 @@ export const removeModule = (deviceId, moduleId) =>
 export const removePort = (deviceId, moduleId, portId) =>
   send('DELETE', `/devices/${encodeURIComponent(deviceId)}/modules/${encodeURIComponent(moduleId)}/ports/${encodeURIComponent(portId)}`);
 
-// ── Device replacement (MAC-derived node identity) ──────────────────────────
-// The firmware now derives its node id from the ESP32's MAC address, so a
-// replaced board — or an upgrade from the old hardcoded "N001" — arrives as a
-// NEW device. Auto-provisioning brings it up within seconds, but the labels,
-// safe ranges and calibration assignments the operator built stay attached to
-// the retired one. These move that configuration across, matching channels by
-// physical position (board address + port code) since the UUIDs differ.
-export const fetchReplacements = (deviceId) =>
-  get(`/devices/${encodeURIComponent(deviceId)}/replacements`);
-
-// Dry run — a migration overwrites the target's configuration, so the operator
-// sees what would move before agreeing to it.
-export const previewMigration = (deviceId, targetId) =>
-  send('POST', `/devices/${encodeURIComponent(deviceId)}/migrate/preview`, { targetId });
-
-export const migrateDevice = (deviceId, targetId, { removeSource = false } = {}) =>
-  send('POST', `/devices/${encodeURIComponent(deviceId)}/migrate`, { targetId, removeSource });
-
 /**
  * Render a MAC-derived node id as the MAC bytes it encodes, for display next to
  * the id. Returns null for legacy ids like "N001" — the caller's cue to show
@@ -203,17 +174,10 @@ export function macSuffixOf(nodeId) {
 // The backend resolves the broker `tid` from tenants.mqtt_tid, builds the exact
 // wire envelope, logs it (cid), and publishes to usc/thesis/{tid}/{nid}/cmd if a
 // broker is connected. It returns { ok, cid, topic, published, envelope }.
-export const sendCommand = (deviceId, action, params = {}) =>
+const sendCommand = (deviceId, action, params = {}) =>
   send('POST', '/commands', { deviceId, action, ...params });
 
 // Actuate an output. Target by actuatorId (preferred) or a raw port (1..6 /
 // "OUT3"). mode 'bin' -> pass state 0|1; mode 'pwm' -> pass duty 0..255.
 export const actuate = (deviceId, { actuatorId, port, mode, state, duty, dur = 0 }) =>
   sendCommand(deviceId, 'actuate', { actuatorId, port, mode, state, duty, dur });
-
-export const busRecovery = (deviceId, busId = 0) =>
-  sendCommand(deviceId, 'bus_recovery', { busId });
-
-// direction: 'up' (enable) | 'down' (disable). chip 0..3 (0x48..0x4B), ch 0..3.
-export const sensorPortToggle = (deviceId, direction, chip, ch) =>
-  sendCommand(deviceId, `sensor_port_${direction}`, { chip, ch });

@@ -11,8 +11,6 @@ import CreateAccountPage from './pages/CreateAccountPage';
 import { useAuth } from './context/AuthContext';
 import { connectRealtime } from './realtime';
 import {
-  devices as seedDevices,
-  notifications as allNotifications,
   computeSensorStatus,
   buildActuatorCommand,
   clampDuty,
@@ -167,8 +165,6 @@ export default function App() {
   const [allDevicesState, setAllDevicesState] = useState([]);
 
   // ── Live backend telemetry ────────────────────────────────────────────
-  // Seeded from mockData above so the UI renders instantly and STILL WORKS
-  // if the backend is down. This effect then merges live data over it.
   // Fetches every tenant's devices (each carries tenantId); `orgDevices`
   // below still does the per-org scoping, so nothing here knows about auth.
   // Backend unreachable → fetch throws → we keep the state we had.
@@ -250,15 +246,14 @@ export default function App() {
     [allDevicesState, tenantSlug]
   );
   // Notifications come from the backend, which raises them when a port crosses
-  // its safe_min/safe_max. Seeded from mockData so the page renders instantly
-  // and still shows something if the API is unreachable, then replaced.
+  // its safe_min/safe_max.
   //
   // Filtered on the SLUG, matching orgDevices above: read.js returns
   // tenantId as tenants.slug, not the AuthContext org id. Those happen to be
   // equal for the two seeded orgs, which is why the old id comparison appeared
   // to work — but an org created through the UI gets a generated id and would
   // have silently shown zero notifications.
-  const [allNotificationsState, setAllNotificationsState] = useState(allNotifications);
+  const [allNotificationsState, setAllNotificationsState] = useState([]);
 
   const pullNotifications = useCallback(async () => {
     try {
@@ -566,6 +561,25 @@ export default function App() {
   }
 
   function renderPage() {
+    // One definition, three call sites (sensor-detail fallback, 'home',
+    // default). Written out three times, the props drifted apart on every edit.
+    const overview = (
+      <DeviceOverview
+        devices={orgDevices}
+        onSelectSensor={handleSelectSensor}
+        canEditMap={isDesigner}
+        canEdit={isDesigner && !isReadOnlyTier}
+        onRenameDevice={renameDeviceName}
+        onRenameModule={renameModuleName}
+        onRemoveDevice={removeDeviceEntry}
+        onRemoveModule={removeModuleEntry}
+        onRemovePort={removePortEntry}
+        onSetPortEnabled={setPortEnabledEntry}
+        tenantId={currentOrg.id}
+        creatorName={currentUser.fullName}
+      />
+    );
+
     // Sensor detail takes priority when a sensor is selected on the home page
     if (currentPage === 'home' && selectedSensor) {
       const device = orgDevices.find(d => d.id === selectedSensor.deviceId);
@@ -574,24 +588,7 @@ export default function App() {
 
       // Defensive fallback: if the port this view pointed at is no longer
       // reported (board/node disconnected), don't crash — drop back to Overview.
-      if (!device || !module || !port) {
-        return (
-          <DeviceOverview
-            devices={orgDevices}
-            onSelectSensor={handleSelectSensor}
-            canEditMap={isDesigner}
-            canEdit={isDesigner && !isReadOnlyTier}
-            onRenameDevice={renameDeviceName}
-            onRenameModule={renameModuleName}
-            onRemoveDevice={removeDeviceEntry}
-            onRemoveModule={removeModuleEntry}
-            onRemovePort={removePortEntry}
-            onSetPortEnabled={setPortEnabledEntry}
-            tenantId={currentOrg.id}
-            creatorName={currentUser.fullName}
-          />
-        );
-      }
+      if (!device || !module || !port) return overview;
 
       return (
         <SensorDetail
@@ -606,22 +603,7 @@ export default function App() {
 
     switch (currentPage) {
       case 'home':
-        return (
-          <DeviceOverview
-            devices={orgDevices}
-            onSelectSensor={handleSelectSensor}
-            canEditMap={isDesigner}
-            canEdit={isDesigner && !isReadOnlyTier}
-            onRenameDevice={renameDeviceName}
-            onRenameModule={renameModuleName}
-            onRemoveDevice={removeDeviceEntry}
-            onRemoveModule={removeModuleEntry}
-            onRemovePort={removePortEntry}
-            onSetPortEnabled={setPortEnabledEntry}
-            tenantId={currentOrg.id}
-            creatorName={currentUser.fullName}
-          />
-        );
+        return overview;
       case 'notifications':
         return (
           <Notifications
@@ -638,22 +620,7 @@ export default function App() {
       case 'team':
         return <Team />;
       default:
-        return (
-          <DeviceOverview
-            devices={orgDevices}
-            onSelectSensor={handleSelectSensor}
-            canEditMap={isDesigner}
-            canEdit={isDesigner && !isReadOnlyTier}
-            onRenameDevice={renameDeviceName}
-            onRenameModule={renameModuleName}
-            onRemoveDevice={removeDeviceEntry}
-            onRemoveModule={removeModuleEntry}
-            onRemovePort={removePortEntry}
-            onSetPortEnabled={setPortEnabledEntry}
-            tenantId={currentOrg.id}
-            creatorName={currentUser.fullName}
-          />
-        );
+        return overview;
     }
   }
 

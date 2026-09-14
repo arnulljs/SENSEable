@@ -13,13 +13,13 @@
 // might be a working sensor someone else installed. So a channel with live data
 // gets an explicit warning naming its current reading, while a channel that's
 // already silent switches off without ceremony.
-import { useState, useEffect, useRef } from 'react';
+import { useConfirmPopover } from './useConfirmPopover';
 
 const PowerIcon = ({ on }) => (
   <svg viewBox="0 0 16 16" width="13" height="13" fill="none"
        stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
     <path d="M8 2v6" />
-    <path d={on ? 'M4.6 4.4a4.5 4.5 0 106.8 0' : 'M4.6 4.4a4.5 4.5 0 106.8 0'} />
+    <path d="M4.6 4.4a4.5 4.5 0 106.8 0" />
     {!on && <path d="M2.5 13.5l11-11" strokeWidth="1.3" />}
   </svg>
 );
@@ -29,23 +29,8 @@ export default function PortPowerButton({
   onToggle,        // (enabled, reason) => Promise
   canEdit = false,
 }) {
-  const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [error, setError] = useState(null);
-  const wrapRef = useRef(null);
-
-  // Click-away / Escape dismiss, so the popover never sits over the gauge.
-  useEffect(() => {
-    if (!confirming) return undefined;
-    const onDoc = (e) => { if (!wrapRef.current?.contains(e.target)) setConfirming(false); };
-    const onKey = (e) => { if (e.key === 'Escape') setConfirming(false); };
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [confirming]);
+  const { busy, setBusy, confirming, setConfirming, error, setError, wrapRef } =
+    useConfirmPopover();
 
   if (!canEdit) return null;
 

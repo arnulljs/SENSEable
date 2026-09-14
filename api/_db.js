@@ -57,7 +57,7 @@ export function getPool() {
 
 // The tenant a request is scoped to. Same contract the Express API uses, so the
 // frontend's api.js needs no changes when it's pointed at the cloud tier.
-export function tenantOf(req) {
+function tenantOf(req) {
   const q = req.query ?? {};
   return req.headers?.['x-tenant-id'] || q.tenant || null;
 }

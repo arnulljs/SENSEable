@@ -10,11 +10,8 @@
 // the same case with a 409 regardless; hiding it here just avoids offering an
 // action that cannot succeed.
 //
-// The confirmation renders as an ANCHORED POPOVER rather than expanding inline.
-// Inline expansion pushed the surrounding header content sideways and, in tight
-// rows like a board header, overlapped the name and address text. A popover is
-// taken out of flow, so nothing around it moves.
-import { useState, useEffect, useRef } from 'react';
+// Confirmation is an anchored popover; see useConfirmPopover.js for why.
+import { useConfirmPopover } from './useConfirmPopover';
 
 const TrashIcon = () => (
   <svg viewBox="0 0 16 16" width="12" height="12" fill="none"
@@ -30,24 +27,8 @@ export default function RemoveButton({
   onRemove,        // () => Promise
   title = 'Remove',
 }) {
-  const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [error, setError] = useState(null);
-  const wrapRef = useRef(null);
-
-  // Click-away and Escape both dismiss, so the popover can never be left
-  // stranded over content the operator is trying to read.
-  useEffect(() => {
-    if (!confirming) return undefined;
-    const onDoc = (e) => { if (!wrapRef.current?.contains(e.target)) setConfirming(false); };
-    const onKey = (e) => { if (e.key === 'Escape') setConfirming(false); };
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [confirming]);
+  const { busy, setBusy, confirming, setConfirming, error, setError, wrapRef } =
+    useConfirmPopover();
 
   if (active) return null;
 

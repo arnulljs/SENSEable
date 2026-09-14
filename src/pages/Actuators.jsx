@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import { macSuffixOf } from '../api';
-import { devices as allDevices, buildActuatorCommand, clampDuty, dutyPct } from '../mockData';
+import { buildActuatorCommand, clampDuty, dutyPct } from '../mockData';
 import EditableName from '../components/EditableName';
+
+// Stable identity for the empty case.
+const EMPTY = [];
 
 // ─── Actuator Control ────────────────────────────────────────────────────────
 // The thesis models actuation as its own concern, distinct from sensing:
@@ -243,7 +246,7 @@ export default function Actuators({ devices: devicesProp, onCommandActuator, can
   // rendered standalone (no handler — e.g. jsdom render tests), keep a local
   // optimistic copy so the controls still work in isolation.
   const [fallbackDevices, setFallbackDevices] = useState(
-    () => (hasHandler ? null : (devicesProp ?? allDevices))
+    () => (hasHandler ? null : (devicesProp ?? EMPTY))
   );
   const devices = hasHandler ? (devicesProp ?? []) : fallbackDevices;
 

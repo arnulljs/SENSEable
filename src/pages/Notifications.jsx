@@ -1,5 +1,7 @@
 // Notifications.jsx — System notifications list
-import { notifications as allNotifications } from '../mockData';
+
+// Stable identity for the empty case.
+const EMPTY = [];
 
 const ICONS = {
   warning: '⚠️',
@@ -10,8 +12,7 @@ const ICONS = {
 
 // `notifications` arrives pre-filtered to the signed-in org by App.jsx and is
 // fetched from the backend, which raises a notification when a port crosses its
-// configured safe range. The mockData import remains only as a standalone
-// fallback for rendering this page in isolation.
+// configured safe range.
 //
 // The list is rendered straight from props rather than copied into state. It
 // used to be `useState(notificationsProp ?? allNotifications)`, and a useState
@@ -25,7 +26,7 @@ export default function Notifications({
   onMarkAllRead,
   readOnly = false,
 }) {
-  const notifs = notificationsProp ?? allNotifications;
+  const notifs = notificationsProp ?? EMPTY;
 
   function markAllRead() {
     if (readOnly) return;

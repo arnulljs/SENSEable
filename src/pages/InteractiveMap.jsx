@@ -10,7 +10,12 @@
 // work anyway.
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { Stage, Layer, Rect, Circle, Text, Group, Line } from 'react-konva';
-import { mapSensors as initialPlacements, devices as defaultDevices } from '../mockData';
+import { mapSensors as initialPlacements } from '../mockData';
+
+// Stable identity: a fresh [] on each render would change hook dependency
+// identity every pass, defeating the memoisation below.
+const EMPTY = [];
+
 
 // Status colours match the rest of the app (GaugeCard, DeviceOverview) —
 // a sensor's dot on the map uses the exact same vocabulary as its gauge.
@@ -180,10 +185,7 @@ export default function InteractiveMap({
   tenantId = 'default',
   creatorName,
 }) {
-  // Falls back to the raw mockData import for standalone use — the same
-  // pattern used by DeviceOverview/Calibration, so all three pages stay
-  // consistent about how tenant-scoped data flows in.
-  const devices = devicesProp ?? defaultDevices;
+  const devices = devicesProp ?? EMPTY;
 
   const containerRef  = useRef(null);
   const [stageSize, setStageSize] = useState({ width: 600, height: 480 });

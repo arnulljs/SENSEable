@@ -1,6 +1,5 @@
 // DeviceOverview.jsx — Home page: device cards + tab to Interactive Map
 import { useState } from 'react';
-import { devices as allDevices } from '../mockData';
 import GaugeCard from '../components/GaugeCard';
 import EditableName from '../components/EditableName';
 import RemoveButton from '../components/RemoveButton';
@@ -17,6 +16,11 @@ function relTime(ts) {
   return `${Math.floor(h / 24)}d ago`;
 }
 import InteractiveMap from './InteractiveMap';
+
+// Stable identity: a fresh [] on each render would change hook dependency
+// identity every pass, defeating the memoisation below.
+const EMPTY = [];
+
 
 const IconOverview = () => (
   <svg viewBox="0 0 16 16" fill="currentColor">
@@ -53,7 +57,7 @@ export default function DeviceOverview({
   tenantId,
   creatorName,
 }) {
-  const devices = devicesProp ?? allDevices;
+  const devices = devicesProp ?? EMPTY;
   const [activeTab, setActiveTab] = useState('overview');
 
   // Track which device/module sections are collapsed.

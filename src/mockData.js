@@ -60,7 +60,7 @@ export function dutyPct(raw) {
 }
 
 // "OUT3" | "out3" | 3 → 3
-export function portNumber(port) {
+function portNumber(port) {
   if (typeof port === 'number') return port;
   const m = String(port).match(/(\d+)/);
   return m ? Number(m[1]) : NaN;
@@ -232,96 +232,6 @@ export const users = [
 // multi-tenant foundation: App.jsx filters this array down to the signed-in
 // user's organization before handing it to any page, so a Designer or
 // Operator only ever sees their own org's hardware.
-export const devices = [
-  {
-    id: 'n1',
-    tenantId: 'aquatech',
-    mqttTid: 'tenant-123',   // broker-side tid (server resolves this from tenants.mqtt_tid)
-    name: 'ESP32 Module 1',
-    nodeId: 'N001',
-    status: 'online',       // online | warning | fault | offline
-    commMode: 'Wi-Fi',
-    uptime: 86400,
-    rssi: -61,
-    freeHeap: 138240,
-    modules: [
-      {
-        id: 'board-1',
-        address: '0x48',
-        name: 'Expansion Board 1',
-        ports: [
-          {
-            id: 'A0', label: 'Dissolved Oxygen', unit: 'mg/L',
-            value: 8.19, rangeMin: 0, rangeMax: 20, safeMin: 6, safeMax: 9,
-            status: computeSensorStatus(8.19, 0, 20, 6, 9),
-            history: generateHistory(8.19, 0, 20, 6, 9),
-          },
-          {
-            id: 'A1', label: 'Salinity', unit: 'PSU',
-            value: 44.97, rangeMin: 0, rangeMax: 70, safeMin: 35, safeMax: 50,
-            status: computeSensorStatus(44.97, 0, 70, 35, 50),
-            history: generateHistory(44.97, 0, 70, 35, 50),
-          },
-          {
-            id: 'A2', label: 'Temperature', unit: '°C',
-            value: 29.62, rangeMin: 0, rangeMax: 50, safeMin: 25, safeMax: 32,
-            status: computeSensorStatus(29.62, 0, 50, 25, 32),
-            history: generateHistory(29.62, 0, 50, 25, 32),
-          },
-        ],
-      },
-    ],
-    // Actuators hang off the *device*, not `modules` — they're wired to the
-    // ESP32 mainboard's PWM-capable GPIO (LEDC), separate from the I²C sensing
-    // boards above. The command wire (`buildActuatorCommand`) addresses each by
-    // its logical output `port` ("OUT1".."OUT16"); the firmware owns the
-    // OUTn→GPIO mapping, so `gpio`/`channel` here are display metadata only.
-    // `mode` is 'pwm' (variable, uses `duty`) or 'binary' (plain on/off). `duty`
-    // is stored in operator PERCENT (0–100) for the UI and converted to the
-    // wire's 0–255 at command-build time. `state`/`duty` are the last commanded
-    // values; `lastAck` mirrors the edge node's acknowledgment ('ok' |
-    // 'executed' | 'pending' | 'rejected' | 'expired'). `dur` (s) is the
-    // auto-off window, 0 = hold until next command. Actuators are NOT one-to-one
-    // with sensors (thesis scope) — this node has 3 sensors, 3 unrelated outputs.
-    actuators: [
-      { id: 'fan01', name: 'Circulation Fan', port: 'OUT1', channel: 0, gpio: 25, mode: 'pwm', state: 1, duty: 166, dur: 0, lastAck: 'success', updatedAt: Date.now() - 42000 },
-      { id: 'htr01', name: 'Water Heater',     port: 'OUT2', channel: 1, gpio: 26, mode: 'bin', state: 0, duty: 0,   dur: 0, lastAck: 'success', updatedAt: Date.now() - 600000 },
-      { id: 'aer01', name: 'Aerator Pump',     port: 'OUT3', channel: 2, gpio: 27, mode: 'pwm', state: 0, duty: 102, dur: 0, lastAck: 'pending', updatedAt: Date.now() - 5000 },
-    ],
-  },
-  {
-    // No expansion board has reported in for this node yet — `modules: []`.
-    // DeviceOverview renders this as "No modules detected" instead of a
-    // sensor grid, and Calibration's board list simply has nothing to show
-    // for this device, all driven by the empty array below.
-    id: 'n2',
-    tenantId: 'aquatech',
-    name: 'ESP32 Module 2',
-    nodeId: 'N002',
-    status: 'online',
-    commMode: 'Wi-Fi',
-    uptime: 41760,
-    rssi: -54,
-    freeHeap: 151040,
-    modules: [],
-    // No actuators wired to this node yet — same proof-of-dynamism as its empty
-    // `modules` above: the Control page renders "No actuators configured"
-    // instead of a control card, driven entirely by this empty array.
-    actuators: [],
-  },
-];
-
-// `tenantId` here mirrors the same scoping idea — a real backend would
-// store notifications per-tenant from the start (tied to whichever
-// device/module/port triggered them), this is just the mock-data version
-// of that same column.
-export const notifications = [
-  { id: 1, tenantId: 'aquatech', type: 'warning', title: 'Dissolved Oxygen Low', message: 'Port A0 on Expansion Board 1 (ESP32 Module 1) is approaching the lower safe threshold.', time: '2 min ago', read: false },
-  { id: 2, tenantId: 'aquatech', type: 'info',    title: 'Device Connected',    message: 'ESP32 Module 1 connected via Wi-Fi at −61 dBm.', time: '1 hr ago', read: false },
-  { id: 3, tenantId: 'aquatech', type: 'success', title: 'Calibration Saved',   message: 'Formula for Dissolved Oxygen (DO) has been saved successfully.', time: '3 hr ago', read: true },
-  { id: 4, tenantId: 'aquatech', type: 'fault',   title: 'Sensor Port Fault',   message: 'Port A3 on Expansion Board 1 reports no valid response. Check wiring.', time: 'Yesterday', read: true },
-];
-
 export const savedFormulas = [
   { id: 1, label: 'temperaTURE', formula: '(+0.00000000*x**0 - 20.0199576*x**2 + 0.00751695*x**2 + 1440.577831)*1' },
   { id: 2, label: 'DO',          formula: 'x*(13453.23451 - 194.23421*np.floor(CH2))/(1175*123*CH2 - 25.64)' },
@@ -362,11 +272,3 @@ export const mapSensors = [
 // (the map now builds its placement palette live from `devices`/`mapSensors`
 // above), kept here only in case other code in the wider project still
 // imports it.
-export const sensorTypes = [
-  { type: 'pH Sensor',      color: '#7C3AED' },
-  { type: 'Temperature',    color: '#EA580C' },
-  { type: 'Dissolved O2',   color: '#2563EB' },
-  { type: 'Salinity',       color: '#0891B2' },
-  { type: 'Light',          color: '#CA8A04' },
-  { type: 'Turbidity',      color: '#65A30D' },
-];
