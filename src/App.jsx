@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
+import ConnectionBanner from './components/ConnectionBanner';
 import DeviceOverview from './pages/DeviceOverview';
 import SensorDetail from './pages/SensorDetail';
 import Notifications from './pages/Notifications';
@@ -25,6 +26,8 @@ import {
   removePort as apiRemovePort,
   setPortEnabled as apiSetPortEnabled,
   isReadOnlyTier,
+  fetchHealth,
+  reportHealth,
   fetchNotifications,
   markNotificationRead as apiMarkNotificationRead,
   markAllNotificationsRead as apiMarkAllNotificationsRead,
@@ -37,6 +40,9 @@ const POLL_MS = 3000;
 // Notifications change far less often than telemetry and are not pushed over
 // the socket, so they get their own slower poll rather than riding the 3s one.
 const NOTIF_POLL_MS = 15000;
+// Health is cheap and it is what drives the failover banner, so it is polled
+// faster than notifications but slower than telemetry.
+const HEALTH_POLL_MS = 10000;
 
 // Merge live backend telemetry into App's device state WITHOUT clobbering
 // sensor CONFIG. Division of ownership:
@@ -272,6 +278,23 @@ export default function App() {
     const id = setInterval(pullNotifications, NOTIF_POLL_MS);
     return () => clearInterval(id);
   }, [tenantSlug, pullNotifications]);
+
+  // Health poll. This is the ONLY place the dashboard learns that the hardware
+  // has failed over to the local broker: the telemetry itself looks identical
+  // either way, because both paths run the same ingest pipeline. A failed poll
+  // is not swallowed silently — api.js flips the connection state to
+  // 'unreachable' on a transport error, which is what the banner renders.
+  useEffect(() => {
+    let alive = true;
+    const poll = () => {
+      fetchHealth()
+        .then((h) => { if (alive) reportHealth(h); })
+        .catch(() => { /* api.js already recorded the outage */ });
+    };
+    poll();
+    const id = setInterval(poll, HEALTH_POLL_MS);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
 
   const orgNotifications = useMemo(
     () => (tenantSlug ? allNotificationsState.filter(n => n.tenantId === tenantSlug) : []),
@@ -632,6 +655,7 @@ export default function App() {
         unreadCount={unreadCount}
       />
       <main className="app-main">
+        <ConnectionBanner />
         {renderPage()}
       </main>
     </div>

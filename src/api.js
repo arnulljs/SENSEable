@@ -23,6 +23,59 @@
 
 const BASE = import.meta.env?.VITE_API_URL ?? 'http://localhost:4000';
 
+// ── Cloud-first connection state ────────────────────────────────────────────
+// Under cloud-first the cloud tier is the PRIMARY: it holds live telemetry
+// straight from the broker, and it now accepts writes as well as reads. The edge
+// server is the mirror and the failover ingest point.
+//
+// WHY THERE IS NO AUTOMATIC FETCH FAILOVER TO THE EDGE
+// A browser will not let an https page fetch http://192.168.x.x. That is mixed
+// content: no CSP entry, no flag and no header gets around it, so silently
+// retrying against the LAN would produce a confusing second failure rather than
+// a working dashboard. The edge therefore serves its OWN copy of this app
+// (see SENSEable-API/src/server.js), and during an outage the operator opens
+// that instead. This module's job is to notice the outage and say so clearly,
+// with the address to open.
+//
+// VITE_EDGE_URL is only used as that hint, unless this page is itself being
+// served over http from the LAN — in which case same-origin requests are
+// already talking to the edge and no switch is needed at all.
+const EDGE_HINT = import.meta.env?.VITE_EDGE_URL ?? '';
+
+const listeners = new Set();
+let connection = { state: 'unknown', tier: null, since: Date.now(), edgeHint: EDGE_HINT };
+
+/** Subscribe to connection changes. Returns an unsubscribe function. */
+export function onConnectionChange(fn) {
+  listeners.add(fn);
+  fn(connection);
+  return () => listeners.delete(fn);
+}
+
+export const getConnection = () => connection;
+
+function setConnection(state, extra = {}) {
+  if (connection.state === state && !Object.keys(extra).length) return;
+  connection = { ...connection, state, ...extra, since: Date.now() };
+  for (const fn of listeners) { try { fn(connection); } catch { /* a bad listener must not break transport */ } }
+}
+
+/**
+ * Report which tier answered and whether the hardware is currently failed over.
+ * Called from App.jsx after a health poll. `route` comes from the edge's MQTT
+ * observation (ROUTE_CLOUD_FIRST / ROUTE_LOCAL_FAILOVER); the cloud tier cannot
+ * see the broker, so it reports staleness instead.
+ */
+export function reportHealth(health) {
+  setConnection('online', {
+    tier: health?.tier ?? (isReadOnlyTier ? 'cloud' : 'edge'),
+    route: health?.mqtt?.route ?? null,
+    newestTelemetryAgeMs: health?.newestTelemetryAgeMs ?? null,
+  });
+}
+
+export const fetchHealth = () => get('/health');
+
 // ── Tenant scoping ──────────────────────────────────────────────────────────
 
 let currentTenant = null;
@@ -41,12 +94,23 @@ export function setTenant(slug) {
 }
 
 /**
- * True when the app is pointed at the read-only cloud tier, so the UI can hide
- * or disable controls that would only produce a 405. An empty VITE_API_URL
- * means same-origin, which is only ever the Vercel deployment; the edge server
- * is always reached through an explicit host.
+ * True when this build is pointed at a tier that cannot accept writes.
+ *
+ * It is now FALSE for the cloud tier as well. Cloud-first moved configuration
+ * authority to Supabase, and api/_write.js gives the Vercel deployment real
+ * PATCH/POST/PUT/DELETE routes under the same RLS as the reads, so hiding those
+ * controls would disable the dashboard's whole purpose for a remote operator.
+ *
+ * The name and export are kept so App.jsx and the page components need no
+ * changes, and so the flag has somewhere to live if a genuinely read-only
+ * deployment is ever wanted again (set VITE_READ_ONLY=true).
+ *
+ * The 405 branch in fail() stays regardless: an OLD cloud deployment that has
+ * not been updated alongside this build will still answer 404/405 to a write,
+ * and that needs a message a human can act on.
  */
-export const isReadOnlyTier = BASE === '';
+export const isCloudTier = BASE === '';
+export const isReadOnlyTier = import.meta.env?.VITE_READ_ONLY === 'true';
 
 // ── Transport ───────────────────────────────────────────────────────────────
 
@@ -95,21 +159,38 @@ async function fail(method, path, res) {
   return new Error(`${method} ${path} -> ${res.status}${detail}`);
 }
 
-async function get(path) {
-  const res = await fetch(`${BASE}/api${path}`, { headers: headers() });
-  if (!res.ok) throw await fail('GET', path, res);
+// A fetch() that REJECTS is a different failure from one that returns 500: the
+// request never reached a server. Under cloud-first that is the exact signature
+// of the outage the whole architecture exists to survive, so it is surfaced as a
+// connection state rather than buried in a per-call error toast.
+async function request(method, path, body) {
+  let res;
+  try {
+    res = await fetch(`${BASE}/api${path}`, {
+      method,
+      headers: body == null
+        ? headers()
+        : headers({ 'Content-Type': 'application/json' }),
+      body: body == null ? undefined : JSON.stringify(body),
+    });
+  } catch (err) {
+    setConnection('unreachable', { tier: isCloudTier ? 'cloud' : 'edge' });
+    throw new Error(
+      `${method} ${path} — cannot reach the ${isCloudTier ? 'cloud' : 'on-site'} server. ` +
+      (EDGE_HINT
+        ? `While the link is down, open the on-site dashboard at ${EDGE_HINT}.`
+        : 'Check the network connection.') +
+      ` (${err.message})`);
+  }
+
+  if (!res.ok) throw await fail(method, path, res);
+  // Any answered request proves the tier is up, including an error response.
+  if (connection.state !== 'online') setConnection('online', { tier: isCloudTier ? 'cloud' : 'edge' });
   return res.json();
 }
 
-async function send(method, path, body) {
-  const res = await fetch(`${BASE}/api${path}`, {
-    method,
-    headers: headers({ 'Content-Type': 'application/json' }),
-    body: body == null ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) throw await fail(method, path, res);
-  return res.json();
-}
+const get = (path) => request('GET', path);
+const send = (method, path, body) => request(method, path, body);
 
 // ── Reads ───────────────────────────────────────────────────────────────────
 

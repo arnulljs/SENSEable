@@ -746,3 +746,59 @@ input, select, textarea { font-family: inherit; }
 @media (max-width: 880px) {
   .auth-brand-panel { display: none; }
 }
+
+
+/* ── Connection state (cloud-first) ─────────────────────────────────────────
+   Three states the dashboard must distinguish: live on the cloud path, running
+   on the on-site server after a failover, and unable to reach any server. The
+   normal state is a small chip rather than a banner, because a bar that is
+   always present is a bar nobody reads. */
+.conn-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 3px 10px;
+  border: 1px solid var(--border, #E5E7EB);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 12px;
+  color: var(--text-muted, #6B7280);
+}
+.conn-chip__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green, #16A34A);
+}
+
+.conn-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border-left: 4px solid;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.conn-banner strong { font-weight: 600; }
+
+.conn-banner--warn {
+  background: #FFFBEB;
+  border-color: var(--amber, #F59E0B);
+  color: #78350F;
+}
+.conn-banner--error {
+  background: #FEF2F2;
+  border-color: var(--red, #DC2626);
+  color: #7F1D1D;
+}
+.conn-banner__link {
+  margin-left: auto;
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}

@@ -48,7 +48,12 @@ export function getPool() {
       // way to reference a checked-in .crt reliably, so we encrypt without
       // chain pinning here. The EDGE tier — which handles the authoritative
       // data — does verify against the pinned CA.
-      ssl: { rejectUnauthorized: false },
+      // Supabase terminates TLS with its own CA and Vercel's function image has
+      // no reliable way to reference a checked-in .crt, so the cloud tier
+      // encrypts without chain pinning. CLOUD_DB_NO_SSL exists only so the
+      // handlers can be run against a plain local Postgres in tests; a
+      // deployment must never set it.
+      ssl: process.env.CLOUD_DB_NO_SSL === 'true' ? false : { rejectUnauthorized: false },
     });
     _pool.on('error', (e) => console.error('[pg] idle client error:', e.message));
   }
