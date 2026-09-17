@@ -12,28 +12,43 @@
 //                   lost — the edge is still logging — but nothing shown here is
 //                   current either.
 //
-// The third state is the one that justifies the component. Without it an outage
-// renders as a dashboard that simply stops updating, which is indistinguishable
-// from hardware that has gone quiet, and the operator's first instinct is to go
-// look at the tank.
+// The third state is what justifies the component. Without it an outage renders
+// as a dashboard that simply stops updating, which is indistinguishable from
+// hardware that has gone quiet, and the operator's first instinct is to go look
+// at the tank.
 
 import { useEffect, useState } from 'react';
 import { onConnectionChange } from '../api';
 
+const WarnIcon = () => (
+  <svg className="conn-banner__icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+    <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+  </svg>
+);
+
+const ErrorIcon = () => (
+  <svg className="conn-banner__icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clipRule="evenodd" />
+  </svg>
+);
+
 const LOOKS = {
   failover: {
     cls: 'conn-banner conn-banner--warn',
+    Icon: WarnIcon,
     title: 'Running on the on-site server',
     detail: 'The node lost its cloud link and is publishing locally. Readings are still being ' +
-            'recorded and will sync to the cloud automatically when the link returns.',
+            'recorded and will sync automatically when the link returns.',
   },
   unreachable: {
     cls: 'conn-banner conn-banner--error',
+    Icon: ErrorIcon,
     title: 'Cannot reach the server',
     detail: 'This view is not updating. The on-site server keeps recording regardless.',
   },
   stale: {
     cls: 'conn-banner conn-banner--warn',
+    Icon: WarnIcon,
     title: 'No recent telemetry',
     detail: 'The server is responding but no node has published lately. Check the hardware.',
   },
@@ -46,15 +61,15 @@ const STALE_MS = 120_000;
 export default function ConnectionBanner() {
   const [conn, setConn] = useState(null);
   useEffect(() => onConnectionChange(setConn), []);
-  if (!conn) return null;
+  if (!conn || conn.state === 'unknown') return null;
 
   let key = null;
   if (conn.state === 'unreachable') key = 'unreachable';
   else if (conn.route === 'ROUTE_LOCAL_FAILOVER') key = 'failover';
   else if (conn.newestTelemetryAgeMs != null && conn.newestTelemetryAgeMs > STALE_MS) key = 'stale';
 
-  // Normal operation gets a small chip, not a banner. A persistent green bar
-  // teaches people to ignore the bar, which costs you the two states that matter.
+  // Normal operation gets a small chip, not a banner. A bar that is always
+  // present is a bar nobody reads, which costs you the two states that matter.
   if (!key) {
     return (
       <div className="conn-chip" title={`Serving tier: ${conn.tier ?? 'unknown'}`}>
@@ -64,15 +79,16 @@ export default function ConnectionBanner() {
     );
   }
 
-  const look = LOOKS[key];
+  const { cls, Icon, title, detail } = LOOKS[key];
   return (
-    <div className={look.cls} role="status" aria-live="polite">
-      <strong>{look.title}</strong>
-      <span>{look.detail}</span>
+    <div className={cls} role="status" aria-live="polite">
+      <Icon />
+      <span className="conn-banner__text">
+        <span className="conn-banner__title">{title}</span>
+        <span className="conn-banner__detail">{detail}</span>
+      </span>
       {key === 'unreachable' && conn.edgeHint ? (
-        <a className="conn-banner__link" href={conn.edgeHint}>
-          Open the on-site dashboard
-        </a>
+        <a className="conn-banner__link" href={conn.edgeHint}>Open on-site dashboard</a>
       ) : null}
     </div>
   );
