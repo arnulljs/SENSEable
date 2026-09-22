@@ -183,9 +183,12 @@ async function request(method, path, body) {
       ` (${err.message})`);
   }
 
-  if (!res.ok) throw await fail(method, path, res);
-  // Any answered request proves the tier is up, including an error response.
+  // Any answered request proves the tier is up, including an error response —
+  // so this has to run BEFORE the !res.ok throw. It ran after it, which meant a
+  // single 4xx/5xx route could never clear the "Cannot reach the server" banner
+  // even though the server was plainly answering.
   if (connection.state !== 'online') setConnection('online', { tier: isCloudTier ? 'cloud' : 'edge' });
+  if (!res.ok) throw await fail(method, path, res);
   return res.json();
 }
 

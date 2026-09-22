@@ -26,7 +26,11 @@
 // it's redundant but harmless, and it keeps one code path for all three.
 
 const HISTORY_CAP = Number(process.env.HISTORY_CAP ?? 40);
-const STALE_MS = Number(process.env.STALE_MS ?? 30_000);
+// The cloud sees telemetry through the sync worker, which pushes every
+// SYNC_INTERVAL_MS (30 s by default). Judging freshness with the edge's bare 30 s
+// window made every channel flicker Offline between passes, so the cloud window
+// is the edge's plus the replication lag it is looking through.
+const STALE_MS = Number(process.env.STALE_MS ?? 30_000) + Number(process.env.SYNC_LAG_MS ?? 60_000);
 
 // Mirrors store.js: "active" = reported within the staleness window. The UI uses
 // it to decide whether a remove button is offered, so both tiers must agree.
@@ -196,7 +200,13 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
     });
     return {
       id: d.id, tenantId: d.tenantId, name: d.name, nodeId: d.nodeId,
-      status: d.status, commMode: d.commMode,
+      // devices.status is whatever the edge persisted with the node's LAST
+      // packet — 'online', forever, once a node goes silent (nothing is written
+      // when a node stops). Ports and boards were already checked against
+      // staleness here; the device itself was not, so a node unplugged eleven
+      // days ago still drew a green dot on the deployed dashboard.
+      status: freshly(d._lastSeenRaw, now) ? d.status : 'offline',
+      commMode: d.commMode,
       uptime: d.uptime, rssi: d.rssi, freeHeap: d.freeHeap,
       lastSeen: d.lastSeen ?? null,
       active: freshly(d._lastSeenRaw, now) || modules.some((m) => m.active),

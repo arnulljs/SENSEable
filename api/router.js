@@ -1,4 +1,4 @@
-// api/[...path].js ──────────────────────────────────────────────────────────
+// api/router.js ─────────────────────────────────────────────────────────────
 // The cloud tier's single API entry point.
 //
 // This replaces api/[resource].js. A single dynamic segment could only ever
@@ -79,8 +79,13 @@ function matchWrite(method, segments) {
 }
 
 export default function handler(req, res) {
-  const raw = req.query?.path ?? [];
-  const segments = Array.isArray(raw) ? raw : [raw];
+  // Reached through the vercel.json rewrite /api/(.*) -> /api/router?path=$1,
+  // so `path` arrives as one slash-joined string. (It used to be the file name
+  // api/[...path].js, but catch-all file routing is a Next.js feature; on this
+  // Vite project Vercel never routed to it, and every route but /api/health —
+  // its own file — answered 404.) An array is still accepted for local tooling.
+  const raw = req.query?.path ?? '';
+  const segments = (Array.isArray(raw) ? raw : String(raw).split('/')).filter(Boolean);
 
   if (req.method === 'GET') {
     const route = segments.length === 1 ? READS[segments[0]] : null;
