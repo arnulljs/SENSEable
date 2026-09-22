@@ -1,42 +1,55 @@
-// api/health.js — liveness, plus the freshness the dashboard's connection banner
-// needs. Deliberately does NOT require a tenant: it proves the function can
-// reach Supabase at all, which is the question being asked when the dashboard
-// has stopped moving.
+// api/health.js — liveness, plus the freshness the connection banner needs.
 //
-// `tier` used to be 'cloud-read'. That is no longer true: under cloud-first this
-// deployment ingests live telemetry and accepts writes through api/_write.js, so
-// the label would tell the UI to disable controls that work.
+// TWO QUERIES, TWO FAILURE MODES, DELIBERATELY SEPARATED.
 //
-// newestTelemetryAgeMs is the cloud tier's only view of hardware health. The
-// edge can report the observed MQTT route because it holds broker connections;
-// this tier cannot see a broker at all, so "nothing has arrived in two minutes"
-// is the closest available signal and it is what src/api.js falls back to.
-import { getPool } from './_db.js';
+// Liveness has to answer without a tenant: it is what a curl, an uptime probe or
+// a browser hitting a cold function asks, and it must not depend on anything
+// except "can this function reach the database".
+//
+// Freshness cannot. `readings` is under row-level security, and the policy
+// compares tenant_id against current_setting('app.current_tenant')::uuid. With
+// no tenant set that setting is the empty string, the uuid cast throws, and the
+// WHOLE endpoint returned 503 with "invalid input syntax for type uuid" — which
+// the dashboard correctly read as "cannot reach the server", because from its
+// point of view that is exactly what happened.
+//
+// So freshness runs only when a tenant is supplied, inside the same scoped
+// transaction the read routes use, and a failure there degrades to nulls rather
+// than taking liveness down with it.
+import { getPool, withTenantScope } from './_db.js';
 
-export default async function handler(_req, res) {
+export default async function handler(req, res) {
+  let base;
   try {
-    const { rows } = await getPool().query(
-      `SELECT current_user,
-              now() AS ts,
-              (SELECT max(ts) FROM readings) AS newest,
-              (SELECT count(*) FROM readings WHERE NOT synced) AS unsynced`);
-    const newest = rows[0].newest ? new Date(rows[0].newest).getTime() : null;
-
-    res.status(200).json({
-      ok: true,
-      tier: 'cloud',
-      store: 'supabase',
-      role: rows[0].current_user,
-      newestTelemetryAgeMs: newest ? Date.now() - newest : null,
-      // Non-zero here means rows are sitting in the CLOUD marked unsynced, which
-      // should never happen: the cloud is the sync destination, not a source. It
-      // is surfaced because a non-zero value indicates a misconfigured tier
-      // (TIER not set to 'cloud' on the bridge), not a transient condition.
-      unsyncedInCloud: Number(rows[0].unsynced),
-      now: rows[0].ts,
-    });
+    const { rows } = await getPool().query('SELECT current_user, now() AS ts');
+    base = { ok: true, tier: 'cloud', store: 'supabase', role: rows[0].current_user, now: rows[0].ts };
   } catch (err) {
-    console.error('[health]', err);
-    res.status(503).json({ ok: false, tier: 'cloud', error: err.message });
+    console.error('[health] database unreachable:', err);
+    return res.status(503).json({ ok: false, tier: 'cloud', error: err.message });
+  }
+
+  const slug = req.headers?.['x-tenant-id'] || req.query?.tenant || null;
+  if (!slug) return res.status(200).json(base);
+
+  try {
+    const data = await withTenantScope(slug, async (client) => {
+      const { rows } = await client.query(
+        `SELECT max(ts) AS newest,
+                count(*) FILTER (WHERE NOT synced) AS unsynced
+           FROM readings`);
+      const newest = rows[0].newest ? new Date(rows[0].newest).getTime() : null;
+      return {
+        newestTelemetryAgeMs: newest ? Date.now() - newest : null,
+        // Non-zero should be impossible: the cloud is the sync DESTINATION, not
+        // a source. A number here means a tier is running without TIER=cloud.
+        unsyncedInCloud: Number(rows[0].unsynced),
+      };
+    });
+    return res.status(200).json({ ...base, ...data });
+  } catch (err) {
+    // An unknown tenant or an RLS refusal is not a health failure. Say so and
+    // let liveness stand.
+    console.error('[health] freshness unavailable:', err.message);
+    return res.status(200).json({ ...base, newestTelemetryAgeMs: null, freshnessError: err.message });
   }
 }
