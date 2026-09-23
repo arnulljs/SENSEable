@@ -21,7 +21,14 @@
 // exported functions. App.jsx calls setTenant() whenever the signed-in
 // organization changes; every request after that carries x-tenant-id.
 
-const BASE = import.meta.env?.VITE_API_URL ?? 'http://localhost:4000';
+// Where the API is. A production build talks to its OWN origin: on Vercel that
+// is the cloud functions, and the copy the edge server serves (public/) talks to
+// the edge. Only `npm run dev` (Vite on :5173, no API of its own) defaults to the
+// local backend. This used to default to http://localhost:4000 for every build,
+// so the deployed site called the viewer's own machine — which the edge's CORS
+// allowlist refuses, hence a permanent "Cannot reach the server" on Vercel.
+const BASE = import.meta.env?.VITE_API_URL
+  ?? (import.meta.env?.DEV ? 'http://localhost:4000' : '');
 
 // ── Cloud-first connection state ────────────────────────────────────────────
 // Under cloud-first the cloud tier is the PRIMARY: it holds live telemetry
@@ -109,7 +116,10 @@ export function setTenant(slug) {
  * not been updated alongside this build will still answer 404/405 to a write,
  * and that needs a message a human can act on.
  */
-export const isCloudTier = BASE === '';
+// Same-origin over https is the Vercel deployment; the edge server is only ever
+// reached over http (LAN or localhost), including when it serves this app itself.
+export const isCloudTier = BASE === '' && typeof window !== 'undefined'
+  && window.location.protocol === 'https:';
 export const isReadOnlyTier = import.meta.env?.VITE_READ_ONLY === 'true';
 
 // ── Transport ───────────────────────────────────────────────────────────────

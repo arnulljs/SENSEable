@@ -23,12 +23,13 @@ const CLOUD_PATH = '/api/ws';
 
 // ws:// for http://, wss:// for https:// — inherits whatever TLS the page has.
 function socketUrl() {
-  const base = import.meta.env?.VITE_API_URL;
+  const base = import.meta.env?.VITE_API_URL ?? (import.meta.env?.DEV ? 'http://localhost:4000' : '');
 
-  // Same-origin (production build) ⇒ we're on the Vercel cloud tier.
+  // Same-origin (production build): https is the Vercel cloud tier, http is the
+  // edge server serving its own copy of this app — which listens on /ws.
   if (!base) {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.host}${CLOUD_PATH}`;
+    const https = window.location.protocol === 'https:';
+    return `${https ? 'wss:' : 'ws:'}//${window.location.host}${https ? CLOUD_PATH : EDGE_PATH}`;
   }
 
   // Explicit backend origin (dev: http://localhost:4000) ⇒ the edge server.
