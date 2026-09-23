@@ -253,6 +253,10 @@ function EditSensorModal({ port, profiles, onSaveProfile, onDeleteProfile, onSav
 // ── Sensor Detail Page ───────────────────────────────────────────────────────
 export default function SensorDetail({ device, module, port, onBack, onUpdatePort }) {
   const { label, unit, value, rangeMin, rangeMax, safeMin, safeMax, status, history } = port;
+  // Readings the edge recorded from the LOCAL broker while the cloud link was
+  // down. On the cloud dashboard they arrived later through the sync worker, so
+  // they are the visible proof that the backup reached the cloud.
+  const recovered = history.filter((h) => h.source === 'local').length;
 
   const [showEditModal, setShowEditModal] = useState(false);
   const [profiles, setProfiles] = useState(() => loadProfiles());
@@ -359,7 +363,14 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
       {/* Data History */}
       <div className="detail-history">
         <div className="history-header">
-          <span className="history-title">Data History</span>
+          <span className="history-title">
+            Data History
+            {recovered > 0 && (
+              <span className="backup-summary">
+                {recovered} of {history.length} recovered from edge backup
+              </span>
+            )}
+          </span>
           <button className="export-btn" onClick={handleExport}>
             ↓ Export JSON
           </button>
@@ -370,6 +381,7 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
               <th>Timestamp</th>
               <th>Value</th>
               <th>Status</th>
+              <th>Source</th>
             </tr>
           </thead>
           <tbody>
@@ -378,6 +390,11 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
                 <td className="mono">{row.timestamp}</td>
                 <td className="mono">{row.value} {unit}</td>
                 <td><span className={`status-badge ${row.status}`}>{row.status}</span></td>
+                <td>
+                  {row.source === 'local'
+                    ? <span className="source-badge backup" title="Recorded by the on-site server while the cloud link was down, then synced to the cloud">↺ Edge backup</span>
+                    : <span className="source-badge live" title="Received live through the cloud broker">Live</span>}
+                </td>
               </tr>
             ))}
           </tbody>

@@ -224,8 +224,8 @@ async function attachHistory(client, byDevice, portUuids) {
   if (!portUuids.length) return;
 
   const { rows } = await client.query(`
-    SELECT port_id, ts, value, status FROM (
-      SELECT port_id, ts, value, status,
+    SELECT port_id, ts, value, status, origin FROM (
+      SELECT port_id, ts, value, status, origin,
              row_number() OVER (PARTITION BY port_id ORDER BY ts DESC) AS rn
       FROM readings
       WHERE port_id = ANY($1::uuid[])
@@ -234,8 +234,12 @@ async function attachHistory(client, byDevice, portUuids) {
   const byPort = new Map();
   for (const r of rows) {
     if (!byPort.has(r.port_id)) byPort.set(r.port_id, []);
+    // origin 'local' in the CLOUD database means the reading was recorded by
+    // the edge during a failover and uploaded afterwards by the sync worker —
+    // data recovered from the local backup rather than received live.
     byPort.get(r.port_id).push({
       timestamp: fmtTs(new Date(r.ts)), value: r.value, status: r.status,
+      source: r.origin ?? 'cloud',
     });
   }
   for (const d of byDevice.values())

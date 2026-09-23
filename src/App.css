@@ -318,7 +318,11 @@ input, select, textarea { font-family: inherit; }
 /* Data History */
 .detail-history { padding: 16px 28px 28px; }
 .history-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.history-title { font-size: 14px; font-weight: 600; }
+.history-title { font-size: 14px; font-weight: 600; display: inline-flex; align-items: center; gap: 10px; }
+.backup-summary { font-size: 12px; font-weight: 500; color: #6d28d9; background: #ede9fe; padding: 2px 8px; border-radius: 999px; }
+.source-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.source-badge.live   { background: var(--gray-bg); color: var(--gray-text); }
+.source-badge.backup { background: #ede9fe; color: #6d28d9; }
 .export-btn {
   display: flex; align-items: center; gap: 6px;
   background: none; border: 1px solid var(--border);
