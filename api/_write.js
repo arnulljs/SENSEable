@@ -226,7 +226,11 @@ export const setPortEnabled = async (client, { deviceId, moduleId, portId, body 
   const command = await queueCommand(client, {
     deviceId,
     action: enabled ? 'sensor_port_up' : 'sensor_port_down',
-    port: rows[0].port_index,
+    // commands.port is the ACTUATOR output (OUT1..OUT6, CHECK 1..6). A sensor
+    // channel is addressed by chip + ch in the payload, so port stays NULL —
+    // exactly as the edge tier records it. Passing the channel index here put
+    // 0..3 into that column and the insert failed commands_port_check.
+    port: null,
     payload: { chip, ch: rows[0].port_index },
   });
   return { ok: true, enabled, command };
@@ -284,7 +288,9 @@ const newCid = () => `cmd-${Date.now().toString(36)}-${Math.random().toString(16
 
 export async function queueCommand(client, { deviceId, action, payload, mode = null, port = null }) {
   const { rows } = await client.query(
-    'SELECT device_id, tenant_id FROM devices WHERE node_id = $1', [nodeIdOf(deviceId)]);
+    `SELECT d.device_id, d.tenant_id, t.mqtt_tid
+       FROM devices d JOIN tenants t ON t.tenant_id = d.tenant_id
+      WHERE d.node_id = $1`, [nodeIdOf(deviceId)]);
   if (!rows.length) throw bad(404, `unknown device '${deviceId}'`);
 
   const cid = newCid();
@@ -292,7 +298,8 @@ export async function queueCommand(client, { deviceId, action, payload, mode = n
   // dispatcher publishes it verbatim and never has to rebuild it. Two places
   // constructing the same envelope is two places for it to drift.
   const envelope = {
-    t: 'cmd', v: 1, nid: nodeIdOf(deviceId), cid,
+    // tid included so a cloud-queued envelope matches the edge's byte for byte.
+    t: 'cmd', v: 1, tid: rows[0].mqtt_tid ?? undefined, nid: nodeIdOf(deviceId), cid,
     ts: Date.now(), action, ...(payload ?? {}),
   };
 
