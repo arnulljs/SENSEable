@@ -20,6 +20,7 @@ export default function CreateAccountPage({ onSwitchToLogin }) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [orgCode, setOrgCode]                 = useState('');
   const [orgName, setOrgName]                 = useState('');
+  const [isTest, setIsTest]                   = useState(false);
   const [error, setError]                     = useState(null);
 
   function switchMode(next) {
@@ -36,7 +37,7 @@ export default function CreateAccountPage({ onSwitchToLogin }) {
     }
     const res = mode === 'join'
       ? await joinOrganization({ orgCode, fullName, email, password })
-      : await registerOrganization({ orgName, fullName, email, password });
+      : await registerOrganization({ orgName, fullName, email, password, isTest });
     if (!res.ok) setError(res.error);
     // On success AuthContext sets currentUser — App.jsx swaps to the
     // signed-in shell automatically, no navigation call needed here.
@@ -88,6 +89,11 @@ export default function CreateAccountPage({ onSwitchToLogin }) {
                   (Tier 1 Service Provider). This form simulates that step for
                   prototype evaluation.
                 </p>
+                <label className="auth-testflag">
+                  <input type="checkbox" checked={isTest}
+                    onChange={e => setIsTest(e.target.checked)} />
+                  <span>This is a test account (can be wiped)</span>
+                </label>
               </>
             )}
 

@@ -837,3 +837,6 @@ input, select, textarea { font-family: inherit; }
   .conn-banner { flex-wrap: wrap; }
   .conn-banner__link { margin-left: 26px; }
 }
+
+.auth-testflag { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--gray-text, #64748b); cursor: pointer; }
+.auth-testflag input { width: 15px; height: 15px; accent-color: var(--blue, #2563EB); cursor: pointer; }

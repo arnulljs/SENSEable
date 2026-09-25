@@ -4,6 +4,14 @@
   "framework": "vite",
   "rewrites": [
     {
+      "source": "/api/orgs/wipe-cron",
+      "destination": "/api/orgs?action=wipe-cron"
+    },
+    {
+      "source": "/api/orgs/(.*)",
+      "destination": "/api/orgs?action=$1"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/router?path=$1"
     },
@@ -41,6 +49,12 @@
           "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' wss://senseable-iot.vercel.app; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"
         }
       ]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/orgs/wipe-cron",
+      "schedule": "0 18 * * *"
     }
   ]
 }

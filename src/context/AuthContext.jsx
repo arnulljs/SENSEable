@@ -1,288 +1,200 @@
-// context/AuthContext.jsx — Mock multi-tenant auth/session layer.
+// context/AuthContext.jsx — real auth on Supabase Auth (identity) + our tenant
+// membership (api/orgs + tenant_for_auth). Same public shape the mock exposed, so
+// every consumer of useAuth() keeps working unchanged:
+//   currentUser {id, fullName, email, tenantId, roleId}
+//   currentOrg  {id, name, slug, orgCode}
+//   role {id}, isDesigner, isOperator, orgUsers, authLoading
+//   login, logout, registerOrganization, joinOrganization, inviteOperator, removeMember
 //
-// There is no backend yet, so this context plays the role that a real auth
-// service + the TENANTS/USERS tables (thesis Appendix I.2, "Tenant and
-// Access ERD") will eventually play. It seeds itself once from
-// mockData.js, then treats localStorage as the source of truth for the
-// rest of the session — the same pattern InteractiveMap.jsx already uses
-// for its own saved map profiles, just one layer up.
-//
-// Every place marked "→ backend" below is the exact seam where a real
-// `fetch('/api/...')` call replaces the in-memory/localStorage logic. The
-// function signatures (login, registerOrganization, joinOrganization,
-// inviteOperator, removeMember) are written to stay the same after that
-// swap, so components calling `useAuth()` shouldn't need to change.
-import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { organizations as seedOrganizations, users as seedUsers, roles } from '../mockData';
-
-const ORGS_KEY    = 'senseful_auth_orgs';
-const USERS_KEY   = 'senseful_auth_users';
-const SESSION_KEY = 'senseful_auth_session'; // just the logged-in userId
-
-function readJSON(key, fallback) {
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-function writeJSON(key, value) {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Storage unavailable or full — session still works for this tab,
-    // it just won't survive a reload.
-  }
-}
-
-// Simulates the round-trip latency of a real auth API, so any loading
-// state built against this context (spinners, disabled buttons) keeps
-// working unchanged once `login`/`registerOrganization`/`joinOrganization`
-// below are swapped for real requests.
-function networkDelay(ms = 450) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function generateOrgCode(name) {
-  const letters = (name.match(/[A-Za-z]/g) || ['X']).slice(0, 4).join('').toUpperCase().padEnd(4, 'X');
-  const suffix = Math.floor(1000 + Math.random() * 9000);
-  return `${letters}-${suffix}`;
-}
-
-function slugify(name) {
-  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'org';
-}
+// FLOW
+//   sign up / log in  → Supabase Auth (email confirmation handled by Supabase).
+//   after a session exists → GET membership via tenant_for_auth(); if the user
+//     has none yet (just confirmed, not yet in a tenant), currentUser is null
+//     and the app shows the create-account screen so they register or join.
+//   register / join   → POST /api/orgs/{register,join} with the access token;
+//     on success we re-resolve membership.
+import {
+  createContext, useCallback, useContext, useEffect, useMemo, useState,
+} from 'react';
+import { supabase } from '../lib/supabase';
 
 const AuthContext = createContext(null);
 
+async function api(action, token, body) {
+  const res = await fetch(`/api/orgs/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(body ?? {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
 export function AuthProvider({ children }) {
-  const [organizations, setOrganizations] = useState(() => readJSON(ORGS_KEY, seedOrganizations));
-  const [users, setUsers]                 = useState(() => readJSON(USERS_KEY, seedUsers));
-  const [currentUserId, setCurrentUserId] = useState(() => readJSON(SESSION_KEY, null));
-  const [authLoading, setAuthLoading]      = useState(false);
+  const [session, setSession] = useState(null);
+  const [membership, setMembership] = useState(null); // tenant_for_auth row, or null
+  const [authLoading, setAuthLoading] = useState(true);
 
-  useEffect(() => { writeJSON(ORGS_KEY, organizations); }, [organizations]);
-  useEffect(() => { writeJSON(USERS_KEY, users); }, [users]);
-  useEffect(() => { writeJSON(SESSION_KEY, currentUserId); }, [currentUserId]);
+  // Track the Supabase session (persisted, auto-refreshed).
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s ?? null));
+    return () => sub.subscription.unsubscribe();
+  }, []);
 
-  const currentUser = useMemo(
-    () => users.find(u => u.id === currentUserId) ?? null,
-    [users, currentUserId]
-  );
-  const currentOrg = useMemo(
-    () => (currentUser ? organizations.find(o => o.id === currentUser.tenantId) ?? null : null),
-    [organizations, currentUser]
-  );
-  const role = useMemo(
-    () => roles.find(r => r.id === currentUser?.roleId) ?? null,
-    [currentUser]
-  );
+  // Whenever the session changes, resolve which tenant this auth user belongs to.
+  const resolveMembership = useCallback(async () => {
+    if (!session?.user) { setMembership(null); return; }
+    const { data, error } = await supabase.rpc('tenant_for_auth', { p_auth_id: session.user.id });
+    setMembership(!error && data && data[0] ? data[0] : null);
+  }, [session]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setAuthLoading(true);
+      await resolveMembership().catch(() => {});
+      if (!cancelled) setAuthLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [resolveMembership]);
+
+  // Shape the mock's fields from (session ⨝ membership).
+  const currentUser = useMemo(() => {
+    if (!session?.user || !membership) return null;
+    return {
+      id: session.user.id,
+      email: session.user.email,
+      fullName: membership.full_name,
+      tenantId: membership.tenant_id,
+      roleId: membership.role_id,
+    };
+  }, [session, membership]);
+
+  const currentOrg = useMemo(() => {
+    if (!membership) return null;
+    return { id: membership.tenant_id, slug: membership.slug, name: membership.slug };
+  }, [membership]);
+
+  const role = useMemo(() => (membership ? { id: membership.role_id } : null), [membership]);
   const isDesigner = role?.id === 'designer';
   const isOperator = role?.id === 'operator';
 
-  // Every account in the signed-in user's organization — this is the
-  // "designer and operator share what's inside the org" surface (Team
-  // page). Scoped purely by tenantId, same as devices/notifications.
-  const orgUsers = useMemo(
-    () => (currentOrg ? users.filter(u => u.tenantId === currentOrg.id) : []),
-    [users, currentOrg]
-  );
-
-  function findUserByEmail(email) {
-    return users.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
-  }
+  // orgUsers (team page) requires an authorized read of the tenant's users; that
+  // belongs behind the JWT-scoped read pass (Stage B follow-up). Empty for now
+  // so the page renders without exposing anything cross-tenant.
+  const orgUsers = useMemo(() => (currentUser ? [currentUser] : []), [currentUser]);
 
   const login = useCallback(async (email, password) => {
-    if (!email?.trim() || !password) {
-      return { ok: false, error: 'Enter your email and password.' };
+    if (!email || !password) return { ok: false, error: 'Enter your email and password.' };
+    const { error } = await supabase.auth.signInWithPassword({
+      email: email.trim(), password,
+    });
+    if (error) {
+      const msg = /confirm/i.test(error.message)
+        ? 'Please confirm your email first — check your inbox for the link.'
+        : 'Incorrect email or password.';
+      return { ok: false, error: msg };
     }
-    setAuthLoading(true);
-    await networkDelay(); // → backend: POST /api/auth/login { email, password }
-    setAuthLoading(false);
-
-    const user = findUserByEmail(email);
-    if (!user || user.password !== password) {
-      return { ok: false, error: 'Incorrect email or password.' };
-    }
-    if (user.status !== 'active') {
-      return { ok: false, error: 'This account has been deactivated. Contact your organization\u2019s Designer.' };
-    }
-    setCurrentUserId(user.id);
     return { ok: true };
-  }, [users]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Clearing the in-memory user id is not enough. The session id is persisted to
-  // localStorage so a reload keeps you signed in — which means dropping only the
-  // React state leaves the credential on disk, and the next visitor to that
-  // browser is silently signed back in as the previous user. On a shared machine
-  // (a lab bench, a greenhouse terminal) that is the realistic threat.
-  //
-  // So: clear the session key, then sweep any other app-scoped keys that could
-  // identify the previous session, and clear sessionStorage wholesale since
-  // nothing there is meant to outlive a session by definition.
-  //
-  // NOTE: there is no server-side token to invalidate, because this is mock
-  // auth with no server session. Once real authentication exists, this function
-  // must also call the backend to revoke the token — clearing the client alone
-  // would leave a still-valid credential in anyone's network capture.
-  const logout = useCallback(() => {
-    setCurrentUserId(null);
-    try {
-      window.localStorage.removeItem(SESSION_KEY);
-      // Anything else this app wrote that is tied to who was signed in.
-      for (const key of Object.keys(window.localStorage)) {
-        if (key.startsWith('senseful_map_profile') || key.startsWith('senseful_session')) {
-          window.localStorage.removeItem(key);
-        }
-      }
-      window.sessionStorage.clear();
-    } catch {
-      // Storage disabled or full — the in-memory state is already cleared, so
-      // this tab is signed out regardless.
-    }
   }, []);
 
-  // Tier 1 (Service Provider) is the one who normally provisions the first
-  // Designer account for a new tenant, per the thesis's role hierarchy.
-  // This form simulates that provisioning step so the prototype can be
-  // evaluated end-to-end without a live backend or staff workflow behind
-  // it — swap the body for a real provisioning request once one exists.
-  const registerOrganization = useCallback(async ({ orgName, fullName, email, password }) => {
-    if (!orgName?.trim() || !fullName?.trim() || !email?.trim() || !password) {
-      return { ok: false, error: 'All fields are required.' };
-    }
-    if (password.length < 6) {
-      return { ok: false, error: 'Password must be at least 6 characters.' };
-    }
-    if (findUserByEmail(email)) {
-      return { ok: false, error: 'An account with that email already exists.' };
-    }
+  const logout = useCallback(async () => {
+    await supabase.auth.signOut();
+    setMembership(null);
+  }, []);
 
-    setAuthLoading(true);
-    await networkDelay(); // → backend: POST /api/orgs (creates a TENANTS row + its initial Designer USERS row)
-    setAuthLoading(false);
+  // Sign up (Supabase sends the confirmation email), then create the tenant.
+  // Because email confirmation is required, the tenant is created on the FIRST
+  // authenticated call after the user confirms and returns — api/orgs rejects an
+  // unconfirmed token. So we sign up, and if a session is immediately available
+  // (confirmations disabled) we create right away; otherwise we tell the user to
+  // confirm, and the create runs after they log in.
+  const registerOrganization = useCallback(async ({ orgName, fullName, email, password, isTest }) => {
+    if (!orgName || !fullName || !email || !password) return { ok: false, error: 'All fields are required.' };
+    if (password.length < 6) return { ok: false, error: 'Password must be at least 6 characters.' };
 
-    const orgId = `org${Date.now()}`;
-    const newOrg = {
-      id: orgId,
-      name: orgName.trim(),
-      slug: slugify(orgName),
-      orgCode: generateOrgCode(orgName),
-      status: 'active',
-      plan: 'Pilot',
-      maxUsers: 6,
-      createdAt: new Date().toISOString(),
-    };
-    const newUser = {
-      id: `usr_${Date.now()}`,
-      tenantId: orgId,
-      roleId: 'designer',
-      fullName: fullName.trim(),
-      email: email.trim(),
-      password,
-      status: 'active',
-      createdAt: new Date().toISOString(),
-    };
-    setOrganizations(prev => [...prev, newOrg]);
-    setUsers(prev => [...prev, newUser]);
-    setCurrentUserId(newUser.id);
-    return { ok: true, org: newOrg };
-  }, [users]); // eslint-disable-line react-hooks/exhaustive-deps
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim(), password,
+      options: { data: { full_name: fullName }, emailRedirectTo: window.location.origin },
+    });
+    if (error) {
+      if (/registered/i.test(error.message)) return { ok: false, error: 'An account with that email already exists.' };
+      return { ok: false, error: error.message };
+    }
+    // Remember the intended org name so we can finish after confirmation.
+    try { window.localStorage.setItem('senseable_pending_org', orgName);
+      window.localStorage.setItem('senseable_pending_org_test', isTest ? '1' : ''); } catch { /* ignore */ }
+
+    if (!data.session) {
+      return { ok: true, pendingConfirmation: true,
+        message: 'Check your email to confirm your account, then log in to finish creating your organization.' };
+    }
+    const r = await api('register', data.session.access_token, { orgName, isTest: !!isTest });
+    if (!r.ok) return { ok: false, error: r.data.error ?? 'Could not create organization.' };
+    await resolveMembership();
+    return { ok: true, org: r.data };
+  }, [resolveMembership]);
 
   const joinOrganization = useCallback(async ({ orgCode, fullName, email, password }) => {
-    if (!orgCode?.trim() || !fullName?.trim() || !email?.trim() || !password) {
-      return { ok: false, error: 'All fields are required.' };
-    }
-    if (password.length < 6) {
-      return { ok: false, error: 'Password must be at least 6 characters.' };
-    }
-    const org = organizations.find(o => o.orgCode.toLowerCase() === orgCode.trim().toLowerCase());
-    if (!org) {
-      return { ok: false, error: 'That organization code wasn\u2019t recognized.' };
-    }
-    if (findUserByEmail(email)) {
-      return { ok: false, error: 'An account with that email already exists.' };
-    }
-    const seatCount = users.filter(u => u.tenantId === org.id).length;
-    if (seatCount >= org.maxUsers) {
-      return { ok: false, error: `${org.name} has reached its seat limit (${org.maxUsers}). Ask your Designer to free up a seat.` };
-    }
+    if (!orgCode || !fullName || !email || !password) return { ok: false, error: 'All fields are required.' };
+    if (password.length < 6) return { ok: false, error: 'Password must be at least 6 characters.' };
 
-    setAuthLoading(true);
-    await networkDelay(); // → backend: POST /api/orgs/:orgCode/join (creates a USERS row scoped to that tenant_id)
-    setAuthLoading(false);
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim(), password,
+      options: { data: { full_name: fullName }, emailRedirectTo: window.location.origin },
+    });
+    if (error) {
+      if (/registered/i.test(error.message)) return { ok: false, error: 'An account with that email already exists.' };
+      return { ok: false, error: error.message };
+    }
+    try { window.localStorage.setItem('senseable_pending_join', orgCode.trim().toUpperCase()); } catch { /* ignore */ }
 
-    const newUser = {
-      id: `usr_${Date.now()}`,
-      tenantId: org.id,
-      roleId: 'operator',
-      fullName: fullName.trim(),
-      email: email.trim(),
-      password,
-      status: 'active',
-      createdAt: new Date().toISOString(),
-    };
-    setUsers(prev => [...prev, newUser]);
-    setCurrentUserId(newUser.id);
-    return { ok: true, org };
-  }, [organizations, users]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!data.session) {
+      return { ok: true, pendingConfirmation: true,
+        message: 'Check your email to confirm your account, then log in to join the organization.' };
+    }
+    const r = await api('join', data.session.access_token, { orgCode });
+    if (!r.ok) return { ok: false, error: r.data.error ?? 'Could not join organization.' };
+    await resolveMembership();
+    return { ok: true, org: r.data };
+  }, [resolveMembership]);
 
-  // Designer-only: provisions an Operator account inside the Designer's
-  // own organization. There's no email infrastructure in this prototype,
-  // so the generated temporary password is handed back once for the
-  // Designer to relay out-of-band — a real backend would email an invite
-  // link instead and never round-trip a password to the client at all.
-  const inviteOperator = useCallback(({ fullName, email }) => {
-    if (!isDesigner || !currentOrg) {
-      return { ok: false, error: 'Only Designers can add team members.' };
-    }
-    if (!fullName?.trim() || !email?.trim()) {
-      return { ok: false, error: 'Name and email are required.' };
-    }
-    if (findUserByEmail(email)) {
-      return { ok: false, error: 'An account with that email already exists.' };
-    }
-    if (orgUsers.length >= currentOrg.maxUsers) {
-      return { ok: false, error: `${currentOrg.name} has reached its seat limit (${currentOrg.maxUsers}).` };
-    }
+  // After a login, if the user confirmed but has no membership yet, finish the
+  // register/join they started before confirming.
+  useEffect(() => {
+    if (!session?.user || membership || authLoading) return;
+    (async () => {
+      let pendingOrg, pendingJoin;
+      try {
+        pendingOrg = window.localStorage.getItem('senseable_pending_org');
+        pendingJoin = window.localStorage.getItem('senseable_pending_join');
+      } catch { /* ignore */ }
+      const token = session.access_token;
+      if (pendingOrg) {
+        let pendingTest = false;
+        try { pendingTest = window.localStorage.getItem('senseable_pending_org_test') === '1'; } catch {}
+        const r = await api('register', token, { orgName: pendingOrg, isTest: pendingTest });
+        if (r.ok) { try { window.localStorage.removeItem('senseable_pending_org'); window.localStorage.removeItem('senseable_pending_org_test'); } catch {} await resolveMembership(); }
+      } else if (pendingJoin) {
+        const r = await api('join', token, { orgCode: pendingJoin });
+        if (r.ok) { try { window.localStorage.removeItem('senseable_pending_join'); } catch {} await resolveMembership(); }
+      }
+    })();
+  }, [session, membership, authLoading, resolveMembership]);
 
-    const tempPassword = Math.random().toString(36).slice(2, 8);
-    const newUser = {
-      id: `usr_${Date.now()}`,
-      tenantId: currentOrg.id,
-      roleId: 'operator',
-      fullName: fullName.trim(),
-      email: email.trim(),
-      password: tempPassword, // → backend: invite email + password_hash; never returned to the client
-      status: 'active',
-      createdAt: new Date().toISOString(),
-    };
-    setUsers(prev => [...prev, newUser]); // → backend: POST /api/orgs/:id/members
-    return { ok: true, user: newUser, tempPassword };
-  }, [isDesigner, currentOrg, orgUsers]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const removeMember = useCallback((userId) => {
-    if (!isDesigner) {
-      return { ok: false, error: 'Only Designers can remove team members.' };
-    }
-    const target = users.find(u => u.id === userId);
-    if (!target || target.tenantId !== currentOrg?.id) {
-      return { ok: false, error: 'User not found in this organization.' };
-    }
-    if (target.roleId === 'designer') {
-      return { ok: false, error: 'Designer accounts can\u2019t be removed from here.' };
-    }
-    setUsers(prev => prev.filter(u => u.id !== userId)); // → backend: DELETE /api/orgs/:id/members/:userId (or soft-deactivate)
-    return { ok: true };
-  }, [isDesigner, users, currentOrg]);
+  // Invites / member management need the authorized users-read pass; kept as
+  // clear not-yet-available responses so the Team UI degrades gracefully.
+  const inviteOperator = useCallback(async () =>
+    ({ ok: false, error: 'Inviting members is not available yet in this build.' }), []);
+  const removeMember = useCallback(async () =>
+    ({ ok: false, error: 'Removing members is not available yet in this build.' }), []);
 
   const value = {
     currentUser, currentOrg, role, isDesigner, isOperator,
     orgUsers, authLoading,
     login, logout, registerOrganization, joinOrganization, inviteOperator, removeMember,
   };
-
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
