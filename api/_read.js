@@ -30,7 +30,10 @@ const HISTORY_CAP = Number(process.env.HISTORY_CAP ?? 40);
 // SYNC_INTERVAL_MS (30 s by default). Judging freshness with the edge's bare 30 s
 // window made every channel flicker Offline between passes, so the cloud window
 // is the edge's plus the replication lag it is looking through.
-const STALE_MS = Number(process.env.STALE_MS ?? 30_000) + Number(process.env.SYNC_LAG_MS ?? 60_000);
+// Match the edge's window exactly (store.js STALE_MS). The old +60s "sync lag"
+// cushion kept a node online up to a minute after the edge dropped it — the
+// live-vs-offline discrepancy. Presence is the node's property, not the tier's.
+const STALE_MS = Number(process.env.STALE_MS ?? 30_000);
 
 // Mirrors store.js: "active" = reported within the staleness window. The UI uses
 // it to decide whether a remove button is offered, so both tiers must agree.
@@ -67,7 +70,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
   const { rows } = await client.query(`
     SELECT
       d.device_id, d.node_id, d.name AS device_name, d.status AS device_status,
-      d.comm_mode, d.uptime_s, d.rssi, d.free_heap, d.last_seen,
+      d.comm_mode, d.uptime_s, d.rssi, d.free_heap, d.last_seen, d.lwt_online,
       t.tenant_id, t.slug AS tenant_slug,
       m.module_id, m.i2c_address, m.name AS module_name,
       m.last_seen AS module_last_seen, m.configured AS module_configured,
@@ -108,6 +111,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
         actuators: [],
         _uuid: r.device_id,
         _lastSeenRaw: r.last_seen,
+        _lwtOnline: r.lwt_online ?? null,
       });
     }
     const dev = byDevice.get(id);
@@ -205,11 +209,13 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       // when a node stops). Ports and boards were already checked against
       // staleness here; the device itself was not, so a node unplugged eleven
       // days ago still drew a green dot on the deployed dashboard.
-      status: freshly(d._lastSeenRaw, now) ? d.status : 'offline',
+      // Mirror the edge's isDeviceActive(): a false LWT means the socket dropped,
+      // so offline now, whatever staleness says.
+      status: (d._lwtOnline !== false && freshly(d._lastSeenRaw, now)) ? d.status : 'offline',
       commMode: d.commMode,
       uptime: d.uptime, rssi: d.rssi, freeHeap: d.freeHeap,
       lastSeen: d.lastSeen ?? null,
-      active: freshly(d._lastSeenRaw, now) || modules.some((m) => m.active),
+      active: d._lwtOnline !== false && (freshly(d._lastSeenRaw, now) || modules.some((m) => m.active)),
       configured: d.configured ?? true,
       modules,
       actuators: d.actuators ?? [],
