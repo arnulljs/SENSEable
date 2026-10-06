@@ -27,7 +27,8 @@
 //    dashboard gets the same {cid, published} response shape either way —
 //    published is false here, meaning "accepted, delivery pending".
 
-import { withTenantScope } from './_db.js';
+import { withTenantScope, callerTenant } from './_db.js';
+import { buildCommand, parsePortNumber } from './_commands.js';
 
 const bad = (status, message) => Object.assign(new Error(message), { status });
 
@@ -223,15 +224,13 @@ export const setPortEnabled = async (client, { deviceId, moduleId, portId, body 
   // what the dashboard shows and what identifies the row; the firmware addresses
   // boards by position on the bus.
   const chip = Math.max(0, parseInt(moduleId, 16) - 0x48);
+  // A sensor channel is addressed by chip + ch in the payload; commands.port
+  // (the ACTUATOR output column) stays NULL because the built envelope has no
+  // `port` — exactly as the edge tier records it.
   const command = await queueCommand(client, {
     deviceId,
     action: enabled ? 'sensor_port_up' : 'sensor_port_down',
-    // commands.port is the ACTUATOR output (OUT1..OUT6, CHECK 1..6). A sensor
-    // channel is addressed by chip + ch in the payload, so port stays NULL —
-    // exactly as the edge tier records it. Passing the channel index here put
-    // 0..3 into that column and the insert failed commands_port_check.
-    port: null,
-    payload: { chip, ch: rows[0].port_index },
+    params: { chip, ch: rows[0].port_index },
   });
   return { ok: true, enabled, command };
 };
@@ -284,44 +283,101 @@ export const removePort = async (client, { deviceId, moduleId, portId }) => {
 // The downlink half of cloud-first. Nothing here touches a broker; the row is
 // the message, and the edge dispatcher is the transport.
 
-const newCid = () => `cmd-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
-
-export async function queueCommand(client, { deviceId, action, payload, mode = null, port = null }) {
+/**
+ * Build the frozen-schema envelope and write it to the outbox.
+ *
+ * The stored payload is the COMPLETE envelope, built by the same builder the
+ * edge uses (_commands.js), because the edge dispatcher publishes it verbatim
+ * and never rebuilds it. This used to spread the raw request body instead, so a
+ * dashboard actuate was stored as { actuatorId: "out3", ts: <ms> } with no
+ * `port` — a command the firmware cannot route — and every cloud-issued
+ * actuation was silently ignored.
+ *
+ * `params` must already be the branch fields only (see pickParams); tid and nid
+ * come from the database here and can never be supplied by the caller.
+ */
+export async function queueCommand(client, { deviceId, action, params = {} }) {
+  // RLS-scoped: only this tenant's devices are visible, so a verified caller
+  // can only ever queue against its own hardware.
   const { rows } = await client.query(
     `SELECT d.device_id, d.tenant_id, t.mqtt_tid
        FROM devices d JOIN tenants t ON t.tenant_id = d.tenant_id
       WHERE d.node_id = $1`, [nodeIdOf(deviceId)]);
   if (!rows.length) throw bad(404, `unknown device '${deviceId}'`);
 
-  const cid = newCid();
-  // The stored payload is the COMPLETE frozen-schema envelope, so the edge
-  // dispatcher publishes it verbatim and never has to rebuild it. Two places
-  // constructing the same envelope is two places for it to drift.
-  const envelope = {
-    // tid included so a cloud-queued envelope matches the edge's byte for byte.
-    t: 'cmd', v: 1, tid: rows[0].mqtt_tid ?? undefined, nid: nodeIdOf(deviceId), cid,
-    ts: Date.now(), action, ...(payload ?? {}),
-  };
+  let envelope;
+  try {
+    envelope = buildCommand(action, { tid: rows[0].mqtt_tid, nid: nodeIdOf(deviceId) }, params);
+  } catch (e) {
+    throw bad(400, e.message);
+  }
 
   await client.query(
     `INSERT INTO commands (tenant_id, device_id, cid, action, mode, port, payload, status)
      VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')`,
-    [rows[0].tenant_id, rows[0].device_id, cid, action, mode, port,
-     JSON.stringify(envelope)]);
+    [rows[0].tenant_id, rows[0].device_id, envelope.cid, action,
+     envelope.mode ?? null, envelope.port ?? null, JSON.stringify(envelope)]);
 
   // published:false means "accepted, not yet on the wire". The dashboard already
   // renders that state, because the edge tier returns it whenever no broker is
   // connected.
-  return { cid, published: false, action, queued: true };
+  return { cid: envelope.cid, published: false, action, queued: true, envelope };
 }
 
+// Branch fields a caller may supply. Everything else in the body — notably
+// t, v, tid, nid, cid, ts — is dropped, so the envelope's identity and
+// addressing always come from the server. buildCommand spreads params over its
+// context, so passing the raw body would let a caller overwrite them.
+const COMMAND_FIELDS = ['port', 'mode', 'state', 'duty', 'dur', 'busId', 'chip', 'ch'];
+const pickParams = (body) =>
+  Object.fromEntries(COMMAND_FIELDS.filter((k) => body[k] != null).map((k) => [k, body[k]]));
+
 export const postCommand = async (client, { body }) => {
-  const { deviceId, action, ...rest } = body ?? {};
+  const { deviceId, action, actuatorId } = body ?? {};
   if (!deviceId || !action) throw bad(400, 'deviceId and action required');
-  return queueCommand(client, {
-    deviceId, action, payload: rest,
-    mode: rest.mode ?? null, port: rest.port ?? null,
-  });
+  const params = pickParams(body ?? {});
+
+  // The dashboard addresses an output by its actuator id ('out3'); the wire
+  // needs the output number. Resolve it from the database exactly as the edge's
+  // POST /commands does from its cache.
+  let actuatorCode = null;
+  if (action === 'actuate') {
+    const { rows } = await client.query(
+      `SELECT a.actuator_code, a.port
+         FROM actuators a JOIN devices d ON d.device_id = a.device_id
+        WHERE d.node_id = $1
+          AND (a.actuator_code = $2 OR ($2 IS NULL AND upper(a.port) = upper($3)))`,
+      [nodeIdOf(deviceId), actuatorId ?? null,
+       params.port != null ? `OUT${parsePortNumber(params.port)}` : null]);
+    if (!rows.length) throw bad(404, `unknown actuator '${actuatorId ?? params.port}'`);
+    actuatorCode = rows[0].actuator_code;
+    params.port = rows[0].port;
+  }
+
+  const result = await queueCommand(client, { deviceId, action, params });
+
+  // Optimistic state, mirroring the edge's applyActuatorCommand(): the output
+  // reads 'pending' from the moment the command is accepted. Besides matching
+  // the edge's behaviour, this is what lets every other dashboard grey out
+  // Start while the command is in flight (the cross-operator lockout) — they
+  // see last_ack='pending' on their next read.
+  if (action === 'actuate') {
+    const e = result.envelope;
+    await client.query(
+      `UPDATE actuators a
+          SET mode = $3::actuator_mode,
+              state = $4,
+              duty = CASE WHEN $3::actuator_mode = 'pwm' THEN $5 ELSE a.duty END,
+              dur = $6,
+              last_ack = 'pending',
+              updated_at = now()
+         FROM devices d
+        WHERE d.device_id = a.device_id AND d.node_id = $1 AND a.actuator_code = $2`,
+      [nodeIdOf(deviceId), actuatorCode, e.mode,
+       e.mode === 'bin' ? e.state : (e.duty > 0 && e.state !== 0 ? 1 : 0),
+       e.duty ?? null, e.dur]);
+  }
+  return { ok: true, ...result };
 };
 
 // ── Linear fit ──────────────────────────────────────────────────────────────
@@ -363,7 +419,10 @@ export function writeHandler(fn, { methods = ['POST'] } = {}) {
       return res.status(405).json({ error: `method not allowed — expected ${methods.join('/')}` });
     }
     try {
-      const slug = req.headers?.['x-tenant-id'] || req.query?.tenant || null;
+      // The tenant comes from the VERIFIED session, never from the header alone:
+      // this endpoint actuates physical hardware, and a bare x-tenant-id let any
+      // caller act as any organisation.
+      const slug = await callerTenant(req);
       const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body ?? {});
       const data = await withTenantScope(slug, (client) =>
         fn(client, { ...req.query, tenantSlug: slug, body, req }));

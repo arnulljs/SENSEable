@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { macSuffixOf } from '../api';
 import { buildActuatorCommand, clampDuty, dutyPct } from '../mockData';
 import EditableName from '../components/EditableName';
@@ -90,6 +90,36 @@ function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }
 
   const [showCmd, setShowCmd] = useState(false);
   const [lastPacket, setLastPacket] = useState(null);
+
+  // ── Cross-operator actuation lockout ───────────────────────────────────────
+  // A command is IN FLIGHT from the instant it's issued (lastAck 'pending',
+  // set optimistically by the backend) until the node acks a TERMINAL state
+  // (completed / stopped / success / failed / error). While it is, every
+  // operator's Start on this output is greyed, so two people can't fire
+  // conflicting signals at the same actuator at the same moment. Stop is never
+  // locked — cutting an output must never be blocked.
+  //
+  // The edge backend broadcasts the 'pending' state the moment the command is
+  // logged, so the OTHER dashboard greys within one WebSocket frame (or one
+  // poll on the read-only cloud view). An ack change re-renders and releases
+  // it. The timer below is the only other release path: if an ack is lost, the
+  // lock would otherwise sit until unrelated traffic re-renders the card, so a
+  // fixed window frees it on its own.
+  const LOCK_MS = Number(import.meta.env?.VITE_ACTUATOR_LOCK_MS ?? 10_000);
+  const inFlight = (a.lastAck === 'pending' || a.lastAck === 'started')
+    && Date.now() - a.updatedAt < LOCK_MS;
+
+  // ponytail: fixed-window lock, no server-side mutex. Two operators who click
+  // within the same broadcast frame can both pass the guard; the last command
+  // the node receives wins, which for an idempotent on/off/duty output is
+  // harmless. Add a real per-output lock on the edge only if that ever matters.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (!inFlight) return;
+    const t = setTimeout(() => forceTick((n) => n + 1),
+                         Math.max(0, LOCK_MS - (Date.now() - a.updatedAt)) + 50);
+    return () => clearTimeout(t);
+  }, [inFlight, a.updatedAt, LOCK_MS]);
 
   const isPwm = draft.mode === 'pwm';
 
@@ -192,10 +222,15 @@ function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }
           by unsaved edits. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
         <button
-          style={{ ...seg(true, 'var(--green)', '#fff'), flex: 1, padding: '7px 0', fontWeight: 700 }}
+          style={{
+            ...seg(true, 'var(--green)', '#fff'), flex: 1, padding: '7px 0', fontWeight: 700,
+            ...(inFlight ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+          }}
+          disabled={inFlight}
           onClick={() => send(1)}
+          title={inFlight ? 'A command is in progress on this output — wait for it to finish' : undefined}
         >
-          {isOn ? 'Apply / Restart' : 'Start'}
+          {inFlight ? 'Sending…' : (isOn ? 'Apply / Restart' : 'Start')}
         </button>
         <button
           style={{ ...seg(!isOn, 'var(--gray)', '#fff'), flex: 1, padding: '7px 0', fontWeight: 700 }}
@@ -205,9 +240,15 @@ function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }
         </button>
       </div>
 
-      {dirty && (
+      {dirty && !inFlight && (
         <div style={{ fontSize: 11, color: 'var(--amber-text, #92400E)', marginBottom: 8 }}>
           Unsent changes — press Start to apply.
+        </div>
+      )}
+
+      {inFlight && (
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 8 }}>
+          A command is in progress on this output — Start is locked until it completes.
         </div>
       )}
 

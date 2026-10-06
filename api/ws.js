@@ -36,7 +36,7 @@
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import pg from 'pg';
-import { withTenantScope } from './_db.js';
+import { withTenantScope, tenantForToken } from './_db.js';
 import { readDevices } from './_read.js';
 
 const { Client } = pg;
@@ -175,9 +175,22 @@ function ensureSafetyPoll() {
   safetyTimer.unref?.();
 }
 
-async function handleSubscribe(ws, slug) {
-  if (!slug) {
-    return send(ws, { type: 'error', error: 'tenant is required' });
+async function handleSubscribe(ws, claimed, token) {
+  // Bind the socket to the tenant of the VERIFIED session, not to whatever
+  // slug the client names — this used to stream any organisation's live data
+  // to anyone who sent {type:'subscribe', tenant:<its slug>}. A browser cannot
+  // set headers on a WebSocket, so the access token rides in the message.
+  // ponytail: verified once at subscribe; a socket that outlives its token
+  // keeps streaming until it reconnects (the client re-subscribes with a fresh
+  // token on every reconnect). Re-verify on a timer if that ever matters.
+  let slug;
+  try {
+    slug = await tenantForToken(token);
+  } catch (err) {
+    return send(ws, { type: 'error', error: err.message });
+  }
+  if (claimed && claimed !== slug) {
+    return send(ws, { type: 'error', error: `not a member of organization '${claimed}'` });
   }
 
   // Validate by doing the real scoped read. resolve_tenant() throws 404 for an
@@ -215,7 +228,7 @@ wss.on('connection', (ws) => {
     try { msg = JSON.parse(raw.toString()); }
     catch { return send(ws, { type: 'error', error: 'malformed JSON' }); }
 
-    if (msg?.type === 'subscribe') return handleSubscribe(ws, msg.tenant);
+    if (msg?.type === 'subscribe') return handleSubscribe(ws, msg.tenant, msg.token);
     return send(ws, { type: 'error', error: `unknown message type '${msg?.type}'` });
   });
 

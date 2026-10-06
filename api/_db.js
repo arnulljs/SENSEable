@@ -27,7 +27,9 @@
 //    We return 400. RLS would return zero rows anyway, but failing loudly beats
 //    silently rendering an empty dashboard that looks like a hardware outage.
 
+/* global process -- Node serverless code; the repo's ESLint config is browser-only */
 import pg from 'pg';
+import { createClient } from '@supabase/supabase-js';
 
 const { Pool } = pg;
 
@@ -60,11 +62,69 @@ export function getPool() {
   return _pool;
 }
 
-// The tenant a request is scoped to. Same contract the Express API uses, so the
-// frontend's api.js needs no changes when it's pointed at the cloud tier.
+// The tenant a request CLAIMS. Same contract the Express API uses. On this tier
+// a claim is never trusted on its own — see callerTenant().
 function tenantOf(req) {
   const q = req.query ?? {};
   return req.headers?.['x-tenant-id'] || q.tenant || null;
+}
+
+// ── Caller identity ─────────────────────────────────────────────────────────
+// This tier is on the public internet and its write routes actuate physical
+// hardware. Until this existed, the tenant came from the x-tenant-id header and
+// nothing else, so anyone — signed in or not — could read any organisation's
+// data or queue commands at its pumps by naming its slug.
+//
+// Now every request must carry the signed-in user's Supabase access token. The
+// token is verified with Supabase, the user's organisation is looked up with the
+// same tenant_for_auth() the dashboard uses at login, and THAT is the tenant the
+// request runs as. A header naming a different organisation is refused.
+const httpErr = (status, message) => Object.assign(new Error(message), { status });
+
+let _admin;
+const admin = () => (_admin ??= createClient(
+  process.env.SUPABASE_URL, process.env.SUPABASE_SECRET_KEY,
+  { auth: { autoRefreshToken: false, persistSession: false } }));
+
+// Verified token → slug. The dashboard polls every couple of seconds, and a
+// round trip to Supabase Auth on each poll would add latency and burn its rate
+// limit, so a verified answer is reused for a minute. Consequence: disabling an
+// account takes up to CALLER_TTL_MS to bite on an instance that already saw it.
+const CALLER_TTL_MS = Number(process.env.CALLER_TTL_MS ?? 60_000);
+const callerCache = new Map();   // token -> { slug, at }
+
+export async function tenantForToken(token) {
+  if (!token) throw httpErr(401, 'sign in required');
+  const hit = callerCache.get(token);
+  if (hit && Date.now() - hit.at < CALLER_TTL_MS) return hit.slug;
+
+  const { data, error } = await admin().auth.getUser(token);
+  if (error || !data?.user) throw httpErr(401, 'invalid or expired session — sign in again');
+  if (!data.user.email_confirmed_at) throw httpErr(403, 'email not confirmed yet');
+
+  const { data: rows, error: rpcErr } =
+    await admin().rpc('tenant_for_auth', { p_auth_id: data.user.id });
+  if (rpcErr) throw httpErr(500, `membership lookup failed: ${rpcErr.message}`);
+  const m = rows?.[0];
+  if (!m) throw httpErr(403, 'this account is not a member of any organization');
+  if (m.status !== 'active') throw httpErr(403, `this account is ${m.status}`);
+
+  // ponytail: whole-map clear at a size cap, not LRU. Warm instances are
+  // short-lived and the cap is only there to stop unbounded growth.
+  if (callerCache.size > 1000) callerCache.clear();
+  callerCache.set(token, { slug: m.slug, at: Date.now() });
+  return m.slug;
+}
+
+/** The tenant this request may act as, from its verified bearer token. */
+export async function callerTenant(req) {
+  const auth = req.headers?.authorization || '';
+  const slug = await tenantForToken(auth.startsWith('Bearer ') ? auth.slice(7) : null);
+  const claimed = tenantOf(req);
+  if (claimed && claimed !== slug) {
+    throw httpErr(403, `not a member of organization '${claimed}'`);
+  }
+  return slug;
 }
 
 /**
@@ -114,11 +174,20 @@ export function readHandler(readFn, { cacheSeconds = 2 } = {}) {
       return res.status(405).json({ error: 'method not allowed — this tier is read-only' });
     }
     try {
-      const slug = tenantOf(req);
+      const slug = await callerTenant(req);
       const data = await withTenantScope(slug, (client) =>
         readFn(client, { tenantSlug: slug, req }));
-      res.setHeader('Cache-Control',
-        `public, max-age=0, s-maxage=${cacheSeconds}, stale-while-revalidate=10`);
+      // PRIVATE, never shared. This used to be `public, s-maxage=N`, which let
+      // Vercel's CDN cache the response keyed by URL alone — and the tenant
+      // travels in a header, not the URL — so one organisation's /api/devices
+      // could be served from cache to another polling the same path. `public`
+      // also explicitly overrides the rule that shared caches don't store
+      // authenticated responses. The cost is that every poll reaches the
+      // function. `cacheSeconds` is now unused (kept so router.js's table and
+      // this signature don't change).
+      void cacheSeconds;
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Vary', 'Authorization, x-tenant-id');
       return res.status(200).json(data);
     } catch (err) {
       const status = err.status ?? 500;

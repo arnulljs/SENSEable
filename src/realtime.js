@@ -83,9 +83,21 @@ export function connectRealtime(tenantSlug, onDevices, onFallback) {
     try { ws = new WebSocket(url); }
     catch { onFallback?.(true); scheduleRetry(); return; }
 
-    ws.onopen = () => {
+    ws.onopen = async (ev) => {
+      const sock = ev.target;                     // this socket, even if `ws` is reassigned meanwhile
       attempt = 0;                                // reset backoff on success
-      ws.send(JSON.stringify({ type: 'subscribe', tenant: tenantSlug }));
+      // The cloud socket binds to the tenant of the verified session, so it
+      // needs the access token (a browser can't set headers on a WebSocket).
+      // Sent over wss only — never in clear text to the edge on the LAN, which
+      // doesn't check it. Fetched per open, so a reconnect carries a fresh one.
+      let token;
+      if (window.location.protocol === 'https:') {
+        const { supabase } = await import('./lib/supabase');
+        token = (await supabase.auth.getSession()).data?.session?.access_token;
+      }
+      if (sock.readyState === WebSocket.OPEN) {
+        sock.send(JSON.stringify({ type: 'subscribe', tenant: tenantSlug, token }));
+      }
     };
 
     ws.onmessage = (ev) => {

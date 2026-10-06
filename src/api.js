@@ -173,14 +173,29 @@ async function fail(method, path, res) {
 // request never reached a server. Under cloud-first that is the exact signature
 // of the outage the whole architecture exists to survive, so it is surfaced as a
 // connection state rather than buried in a per-call error toast.
+// The cloud tier binds every request to the signed-in user's organisation by
+// verifying their Supabase access token; x-tenant-id alone is no longer
+// accepted there. The edge (plain http on the LAN) does not check it, and adding
+// an Authorization header would force a CORS preflight it isn't configured for,
+// so it is sent to the cloud only. Imported lazily so this module still loads
+// where the Supabase env is absent (node-side tests, the edge's own build).
+async function authHeader() {
+  if (!isCloudTier) return {};
+  const { supabase } = await import('./lib/supabase');
+  const { data } = await supabase.auth.getSession();   // refreshes if expired
+  const token = data?.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request(method, path, body) {
+  const auth = await authHeader();
   let res;
   try {
     res = await fetch(`${BASE}/api${path}`, {
       method,
       headers: body == null
-        ? headers()
-        : headers({ 'Content-Type': 'application/json' }),
+        ? headers(auth)
+        : headers({ ...auth, 'Content-Type': 'application/json' }),
       body: body == null ? undefined : JSON.stringify(body),
     });
   } catch (err) {
