@@ -77,6 +77,7 @@ function mergeTelemetry(localDevices, backendDevices) {
       // `...ld` spread froze them at whatever the first page load returned —
       // which is why a node publishing right now still read "last seen 22h ago".
       lastSeen: bd.lastSeen ?? null,
+      hwConfig: bd.hwConfig ?? null,  // backend-owned, read-only
       active: bd.active,
       configured: bd.configured,
       // Actuators: the backend now owns the cmd/ack lifecycle (last_ack, state,

@@ -20,15 +20,17 @@
 //    given it. That is what lets a row created in the cloud and the "same" row
 //    created on the edge during an outage merge instead of duplicating.
 //
-// 3. NO BROKER, SO COMMANDS ARE QUEUED, NOT PUBLISHED. A Vercel function cannot
-//    hold an MQTT connection. POST /commands therefore writes a row to the
-//    `commands` outbox with published_at NULL, and the edge server's dispatcher
-//    publishes it on whichever broker the hardware is currently using. The
-//    dashboard gets the same {cid, published} response shape either way —
-//    published is false here, meaning "accepted, delivery pending".
+// 3. COMMANDS ARE RECORDED, THEN PUBLISHED FROM HERE. POST /commands writes the
+//    row to the `commands` outbox and then publishes it straight to the cloud
+//    broker with a one-shot connection (_mqtt.js) — no on-site server involved.
+//    If that publish fails, published_at stays NULL and the cloud bridge
+//    (Lambda) delivers it on its next run. The edge dispatches only during a
+//    local failover. The response is the same {cid, published} shape the edge
+//    returns; published:false means "accepted, delivery pending".
 
 import { withTenantScope, callerTenant } from './_db.js';
-import { buildCommand, parsePortNumber } from './_commands.js';
+import { buildCommand, parsePortNumber, cmdTopic } from './_commands.js';
+import { publishOnce } from './_mqtt.js';
 
 const bad = (status, message) => Object.assign(new Error(message), { status });
 
@@ -300,7 +302,7 @@ export async function queueCommand(client, { deviceId, action, params = {} }) {
   // RLS-scoped: only this tenant's devices are visible, so a verified caller
   // can only ever queue against its own hardware.
   const { rows } = await client.query(
-    `SELECT d.device_id, d.tenant_id, t.mqtt_tid
+    `SELECT d.device_id, d.tenant_id, t.mqtt_tid, d.wire_tid
        FROM devices d JOIN tenants t ON t.tenant_id = d.tenant_id
       WHERE d.node_id = $1`, [nodeIdOf(deviceId)]);
   if (!rows.length) throw bad(404, `unknown device '${deviceId}'`);
@@ -318,10 +320,40 @@ export async function queueCommand(client, { deviceId, action, params = {} }) {
     [rows[0].tenant_id, rows[0].device_id, envelope.cid, action,
      envelope.mode ?? null, envelope.port ?? null, JSON.stringify(envelope)]);
 
-  // published:false means "accepted, not yet on the wire". The dashboard already
-  // renders that state, because the edge tier returns it whenever no broker is
-  // connected.
-  return { cid: envelope.cid, published: false, action, queued: true, envelope };
+  // Cloud-first delivery: put it on the cloud broker NOW, from here. The row is
+  // the record and the fallback; publishing is the delivery. Only a broker
+  // acknowledgement stamps published_at, so a failed publish leaves the row for
+  // the cloud bridge's dispatcher to retry — never lost, never sent twice.
+  //
+  // The topic is the node's OWN tid — the firmware builds its command topic from
+  // the tenant id in its NVS and never reads the tid inside the payload. For a
+  // node PINNED to another tenant (node_tenant_assignments) that differs from
+  // the tenant's mqtt_tid; devices.wire_tid (migration 018) is the tid the
+  // ingesting tier last saw it publish under. A pinned node that hasn't been
+  // heard from yet has no known topic: publishing to the tenant's tid would
+  // reach nobody yet stamp the row as sent, so that one case is left to the
+  // bridge, which learns the tid from the node's next packet.
+  // ponytail: the publish runs inside the request's transaction; if the COMMIT
+  // then failed, the node would act on a command with no row. Commit first and
+  // publish after if that ever shows up in practice.
+  const nid = nodeIdOf(deviceId);
+  let topicTid = rows[0].wire_tid;
+  if (!topicTid) {
+    const { rowCount: pinned } = await client.query(
+      'SELECT 1 FROM node_tenant_assignments WHERE node_id = $1', [nid]);
+    topicTid = pinned ? null : envelope.tid;
+  }
+  let published = false;
+  if (topicTid) {
+    published = await publishOnce(cmdTopic(topicTid, nid), envelope);
+    if (published) {
+      await client.query('UPDATE commands SET published_at = now() WHERE cid = $1', [envelope.cid]);
+    }
+  }
+
+  // published:false means "accepted, delivery pending" — the bridge will send
+  // it. The dashboard already renders that state.
+  return { cid: envelope.cid, published, action, queued: true, envelope };
 }
 
 // Branch fields a caller may supply. Everything else in the body — notably

@@ -1,3 +1,4 @@
+/* global process -- Node serverless code; the repo's ESLint config is browser-only */
 // api/_commands.js ──────────────────────────────────────────────────────────
 // Builds DOWNWARD command envelopes exactly as the frozen "cmd" schema defines
 // them. This is a copy of SENSEable-API/src/commands.js (the edge's builder),
@@ -28,6 +29,12 @@
 import { randomUUID } from 'node:crypto';
 
 export const SCHEMA_VERSION = 1;
+export const TOPIC_BASE = process.env.MQTT_TOPIC_BASE ?? 'usc/thesis';
+
+// Downward command topic: usc/thesis/{tid}/{nid}/cmd — same as the edge's.
+export function cmdTopic(tid, nid, base = TOPIC_BASE) {
+  return `${base}/${tid}/${nid}/cmd`;
+}
 
 export function newCid(prefix = 'cmd') {
   return `${prefix}-${randomUUID()}`;

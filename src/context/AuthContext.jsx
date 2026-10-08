@@ -2,7 +2,7 @@
 // membership (api/orgs + tenant_for_auth). Same public shape the mock exposed, so
 // every consumer of useAuth() keeps working unchanged:
 //   currentUser {id, fullName, email, tenantId, roleId}
-//   currentOrg  {id, name, slug, orgCode}
+//   currentOrg  {id, name, slug, orgCode, tid, maxUsers}
 //   role {id}, isDesigner, isOperator, orgUsers, authLoading
 //   login, logout, registerOrganization, joinOrganization, inviteOperator, removeMember
 //
@@ -23,7 +23,9 @@ const AuthContext = createContext(null);
 async function api(action, token, body) {
   const res = await fetch(`/api/orgs/${action}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    headers: token
+      ? { 'content-type': 'application/json', authorization: `Bearer ${token}` }
+      : { 'content-type': 'application/json' },
     body: JSON.stringify(body ?? {}),
   });
   const data = await res.json().catch(() => ({}));
@@ -71,19 +73,44 @@ export function AuthProvider({ children }) {
     };
   }, [session, membership]);
 
+  // The login lookup only carries ids, so the organization's real name, join
+  // code and Tenant ID come from /api/orgs/me. Served by the
+  // cloud tier; where it isn't (the edge's own copy of this app) the fields
+  // stay empty and the page shows what it has.
+  const [orgInfo, setOrgInfo] = useState(null);
+  const accessToken = session?.access_token;
+  useEffect(() => {
+    if (!membership || !accessToken) return;
+    let cancelled = false;
+    api('me', accessToken)
+      .then((r) => { if (!cancelled) setOrgInfo(r.ok ? r.data : null); })
+      .catch(() => { if (!cancelled) setOrgInfo(null); });
+    return () => { cancelled = true; };
+  }, [membership, accessToken]);
+
   const currentOrg = useMemo(() => {
     if (!membership) return null;
-    return { id: membership.tenant_id, slug: membership.slug, name: membership.slug };
-  }, [membership]);
+    // Details fetched for a previous sign-in are ignored rather than cleared.
+    const info = orgInfo?.slug === membership.slug ? orgInfo : null;
+    return {
+      id: membership.tenant_id, slug: membership.slug,
+      name: info?.name ?? membership.slug,
+      orgCode: info?.org_code ?? null,
+      tid: info?.mqtt_tid ?? null,
+      maxUsers: info?.max_users ?? null,
+    };
+  }, [membership, orgInfo]);
 
   const role = useMemo(() => (membership ? { id: membership.role_id } : null), [membership]);
   const isDesigner = role?.id === 'designer';
   const isOperator = role?.id === 'operator';
 
-  // orgUsers (team page) requires an authorized read of the tenant's users; that
-  // belongs behind the JWT-scoped read pass (Stage B follow-up). Empty for now
-  // so the page renders without exposing anything cross-tenant.
-  const orgUsers = useMemo(() => (currentUser ? [currentUser] : []), [currentUser]);
+  // Team page members, from /api/orgs/me (scoped server-side to the caller's
+  // tenant). Until it answers, or where it isn't served, just the signed-in user.
+  const orgUsers = useMemo(() => {
+    const info = orgInfo?.slug === membership?.slug ? orgInfo : null;
+    return info?.members ?? (currentUser ? [currentUser] : []);
+  }, [orgInfo, membership, currentUser]);
 
   const login = useCallback(async (email, password) => {
     if (!email || !password) return { ok: false, error: 'Enter your email and password.' };
@@ -114,6 +141,15 @@ export function AuthProvider({ children }) {
     if (!orgName || !fullName || !email || !password) return { ok: false, error: 'All fields are required.' };
     if (password.length < 6) return { ok: false, error: 'Password must be at least 6 characters.' };
 
+    // The server derives the Tenant ID from the name; check it's free BEFORE
+    // creating the account. With email confirmation on, the organization is only
+    // created after the designer confirms, so a clash found then would fail
+    // where nobody sees it.
+    const check = await api('tid-check', null, { orgName });
+    if (!check.ok) return { ok: false, error: check.data.error ?? 'Could not check the Tenant ID. Try again.' };
+    if (!check.data.available) return { ok: false, error: check.data.error };
+    const summary = { orgName, tid: check.data.tid, email: email.trim() };
+
     const { data, error } = await supabase.auth.signUp({
       email: email.trim(), password,
       options: { data: { full_name: fullName }, emailRedirectTo: window.location.origin },
@@ -127,13 +163,13 @@ export function AuthProvider({ children }) {
       window.localStorage.setItem('senseable_pending_org_test', isTest ? '1' : ''); } catch { /* ignore */ }
 
     if (!data.session) {
-      return { ok: true, pendingConfirmation: true,
-        message: 'Check your email to confirm your account, then log in to finish creating your organization.' };
+      return { ok: true, pendingConfirmation: true, summary,
+        message: 'Confirm the email address, then sign in to finish creating the organization.' };
     }
     const r = await api('register', data.session.access_token, { orgName, isTest: !!isTest });
     if (!r.ok) return { ok: false, error: r.data.error ?? 'Could not create organization.' };
     await resolveMembership();
-    return { ok: true, org: r.data };
+    return { ok: true, org: r.data, summary: { ...summary, tid: r.data.mqtt_tid ?? summary.tid, orgCode: r.data.org_code } };
   }, [resolveMembership]);
 
   const joinOrganization = useCallback(async ({ orgCode, fullName, email, password }) => {
@@ -174,8 +210,18 @@ export function AuthProvider({ children }) {
       if (pendingOrg) {
         let pendingTest = false;
         try { pendingTest = window.localStorage.getItem('senseable_pending_org_test') === '1'; } catch {}
+        // ponytail: a tid taken by someone else between the form's check and this
+        // call is only logged, and the next sign-in retries. The form checked it
+        // seconds or minutes earlier, so this needs two same-name registrations
+        // racing; surface it on the login screen if that ever happens in practice.
         const r = await api('register', token, { orgName: pendingOrg, isTest: pendingTest });
-        if (r.ok) { try { window.localStorage.removeItem('senseable_pending_org'); window.localStorage.removeItem('senseable_pending_org_test'); } catch {} await resolveMembership(); }
+        if (r.ok) {
+          try { ['senseable_pending_org', 'senseable_pending_org_test']
+            .forEach((k) => window.localStorage.removeItem(k)); } catch {}
+          await resolveMembership();
+        } else {
+          console.error('[auth] finishing organization registration failed:', r.data.error);
+        }
       } else if (pendingJoin) {
         const r = await api('join', token, { orgCode: pendingJoin });
         if (r.ok) { try { window.localStorage.removeItem('senseable_pending_join'); } catch {} await resolveMembership(); }

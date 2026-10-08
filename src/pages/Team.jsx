@@ -17,6 +17,7 @@ function initials(name) {
 }
 
 function formatDate(iso) {
+  if (!iso) return '\u2014';
   try {
     return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   } catch {
@@ -63,8 +64,13 @@ export default function Team() {
             <div>
               <div style={{ fontSize: 15, fontWeight: 700 }}>{currentOrg?.name}</div>
               <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginTop: 3 }}>
-                {currentOrg?.plan} plan &middot; Org code{' '}
-                <span className="mono-chip">{currentOrg?.orgCode}</span> &middot; {seatsUsed} of {seatsMax} seats used
+                {currentOrg?.plan && <>{currentOrg.plan} plan &middot; </>}
+                Org code{' '}
+                <span className="mono-chip" title="Operators use this to join the organization">{currentOrg?.orgCode ?? '—'}</span>
+                {' '}&middot; Tenant ID{' '}
+                {/* What each node's setup portal needs; links the nodes to this workspace. */}
+                <span className="mono-chip" title="Enter this in each node's setup portal">{currentOrg?.tid ?? 'not assigned'}</span>
+                {seatsMax > 0 && <> &middot; {seatsUsed} of {seatsMax} seats used</>}
               </div>
             </div>
             {isDesigner && (

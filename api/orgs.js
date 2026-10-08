@@ -6,6 +6,8 @@
 //
 //   POST /api/orgs/register  { orgName }          → new tenant, caller = Designer
 //   POST /api/orgs/join      { orgCode }          → existing tenant, caller = Operator
+//   POST /api/orgs/me                             → caller's organization details
+//   POST /api/orgs/tid-check { orgName }          → its Tenant ID, and is it free? (no auth)
 //
 // The caller proves who they are with their Supabase access token in the
 // Authorization header; the SECRET key is used server-side only to verify that
@@ -19,6 +21,17 @@
 
 import pg from 'pg';
 import { createClient } from '@supabase/supabase-js';
+import { generateTid } from './_tid.js';
+
+// ── Device Tenant ID (tid) ──────────────────────────────────────────────────
+// The value an organization enters in each node's setup portal; the middle of
+// every MQTT topic its nodes use (usc/thesis/{tid}/{node}/…), mapped back to the
+// organization through tenants.mqtt_tid. Derived from the organization name
+// (api/_tid.js) and fixed at registration: changing it would cut off every node
+// already set up with it.
+const NAME_RULE = 'The organization name needs at least two letters or numbers.';
+const takenMsg = (tid) => `Tenant ID ${tid} is already used by another organization (same or very similar name). ` +
+  'Make the name more specific, e.g. add the city.';
 
 const { Pool } = pg;
 let _pool;
@@ -56,6 +69,27 @@ async function callerFromToken(req) {
   return { user: data.user };
 }
 
+// ROW-LEVEL SECURITY. On Vercel this connects as senseable_app, which sees and
+// writes only rows of the tenant named in app.current_tenant (API migration 001).
+// Each tenant-bound step runs in a transaction that names its tenant; lookups
+// that must cross tenants (by auth user, org code, tid) are SECURITY DEFINER
+// functions (API migrations 016 and 020).
+async function inTenant(pool, tenantId, fn) {
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    // is_local: discarded at COMMIT, so it cannot leak to the next user of a
+    // pooled connection.
+    await c.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
+    const r = await fn(c);
+    await c.query('COMMIT');
+    return r;
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally { c.release(); }
+}
+
 async function existingMembership(pool, authId) {
   const { rows } = await pool.query('SELECT * FROM tenant_for_auth($1)', [authId]);
   return rows[0] ?? null;
@@ -65,6 +99,9 @@ async function register(req, res, pool, user) {
   const orgName = String(req.body?.orgName ?? '').trim();
   const isTest = req.body?.isTest === true;
   if (orgName.length < 2) return res.status(400).json({ error: 'orgName is required' });
+  // Always re-derived here; a tid the client sends is ignored.
+  const tid = await generateTid(orgName);
+  if (!tid) return res.status(400).json({ error: NAME_RULE });
 
   const already = await existingMembership(pool, user.id);
   if (already) return res.status(200).json({ ok: true, alreadyMember: true, ...already });
@@ -74,29 +111,76 @@ async function register(req, res, pool, user) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const slug = attempt === 0 ? slugify(orgName) : `${slugify(orgName)}-${Math.floor(Math.random() * 900 + 100)}`;
     const code = orgCodeFrom(orgName);
-    const c = await pool.connect();
+    // The insert has to run as the new tenant, so work out its id first: a
+    // BEFORE INSERT trigger (derive_pk, API migration 009) sets tenant_id to
+    // senseable_uuid('tenant', slug) whatever we pass.
+    const { rows: [{ id: tenantId }] } = await pool.query("SELECT senseable_uuid('tenant', $1::text) AS id", [slug]);
     try {
-      await c.query('BEGIN');
-      const t = await c.query(
-        `INSERT INTO tenants (slug, org_code, name, status, is_test) VALUES ($1,$2,$3,'active',$4)
-         RETURNING tenant_id, slug, org_code`, [slug, code, orgName, isTest]);
-      const tenantId = t.rows[0].tenant_id;
-      await c.query(
-        `INSERT INTO users (tenant_id, role_id, full_name, email, auth_id, status)
-         VALUES ($1,'designer',$2,$3,$4,'active')`,
-        [tenantId, fullName, user.email, user.id]);
-      await c.query('COMMIT');
+      const t = await inTenant(pool, tenantId, async (c) => {
+        const r = await c.query(
+          `INSERT INTO tenants (tenant_id, slug, org_code, name, status, is_test, mqtt_tid)
+           VALUES ($1,$2,$3,$4,'active',$5,$6)
+           RETURNING tenant_id, slug, org_code, mqtt_tid`, [tenantId, slug, code, orgName, isTest, tid]);
+        await c.query(
+          `INSERT INTO users (tenant_id, role_id, full_name, email, auth_id, status)
+           VALUES ($1,'designer',$2,$3,$4,'active')`,
+          [tenantId, fullName, user.email, user.id]);
+        return r;
+      });
       return res.status(201).json({
         ok: true, tenant_id: tenantId, slug: t.rows[0].slug,
-        org_code: t.rows[0].org_code, role_id: 'designer', full_name: fullName,
+        org_code: t.rows[0].org_code, mqtt_tid: t.rows[0].mqtt_tid,
+        role_id: 'designer', full_name: fullName,
       });
     } catch (e) {
-      await c.query('ROLLBACK').catch(() => {});
+      // Not retried around: a different tid would not match what was handed over.
+      if (e.code === '23505' && /mqtt_tid/.test(`${e.constraint} ${e.detail}`)) {
+        return res.status(409).json({ error: takenMsg(tid) });
+      }
       if (e.code === '23505') continue;         // unique violation → retry with a new slug/code
       throw e;
-    } finally { c.release(); }
+    }
   }
   return res.status(409).json({ error: 'could not allocate a unique org slug — try a different name' });
+}
+
+// POST /api/orgs/tid-check { orgName } — before any account exists. Registration
+// creates the organization only after the designer confirms their email, so a
+// name whose tid is taken has to be caught on the form, not out of sight later.
+async function tidCheck(req, res, pool) {
+  const tid = await generateTid(req.body?.orgName);
+  if (!tid) return res.status(200).json({ ok: true, tid: null, available: false, error: NAME_RULE });
+  const { rows: [{ taken }] } = await pool.query('SELECT tid_taken($1) AS taken', [tid]);
+  return res.status(200).json({ ok: true, tid, available: !taken, ...(taken ? { error: takenMsg(tid) } : {}) });
+}
+
+// POST /api/orgs/me — the signed-in user's organization: its real name, the
+// code operators join with, the tid to enter in each node's setup portal, and
+// its members for the Team page. (The membership lookup the app uses at login
+// carries only ids.) Scoped to the caller's own tenant.
+async function me(req, res, pool, user) {
+  const m = await existingMembership(pool, user.id);
+  if (!m) return res.status(404).json({ error: 'not a member of any organization' });
+  const { org, members } = await inTenant(pool, m.tenant_id, async (c) => ({
+    org: (await c.query(
+      'SELECT name, slug, org_code, mqtt_tid, max_users FROM tenants WHERE tenant_id = $1', [m.tenant_id])).rows[0],
+    members: (await c.query(
+      `SELECT user_id, auth_id, full_name, email, role_id, created_at FROM users
+        WHERE tenant_id = $1 AND status = 'active' ORDER BY created_at`, [m.tenant_id])).rows,
+  }));
+  if (!org) return res.status(404).json({ error: 'organization not found' });
+  return res.status(200).json({
+    ok: true, name: org.name, slug: org.slug, org_code: org.org_code, max_users: org.max_users,
+    role_id: m.role_id,
+    // Every member sees it: it is derivable from the name anyway (api/_tid.js),
+    // and whoever sets up a node needs it.
+    mqtt_tid: org.mqtt_tid,
+    // id = the Supabase auth id where there is one, so the page can mark "You".
+    members: members.map((u) => ({
+      id: u.auth_id ?? u.user_id, fullName: u.full_name, email: u.email,
+      roleId: u.role_id, createdAt: u.created_at,
+    })),
+  });
 }
 
 async function join(req, res, pool, user) {
@@ -106,21 +190,22 @@ async function join(req, res, pool, user) {
   const already = await existingMembership(pool, user.id);
   if (already) return res.status(200).json({ ok: true, alreadyMember: true, ...already });
 
-  const t = await pool.query('SELECT tenant_id, slug, name, max_users FROM tenants WHERE org_code = $1', [orgCode]);
+  const t = await pool.query('SELECT * FROM tenant_by_org_code($1)', [orgCode]);
   if (!t.rows.length) return res.status(404).json({ error: 'no organization with that code' });
   const tenant = t.rows[0];
 
-  const count = await pool.query('SELECT count(*)::int AS n FROM users WHERE tenant_id = $1', [tenant.tenant_id]);
-  if (count.rows[0].n >= tenant.max_users) {
-    return res.status(403).json({ error: 'this organization has reached its member limit' });
-  }
-
   const fullName = user.user_metadata?.full_name ?? user.email.split('@')[0];
   try {
-    await pool.query(
-      `INSERT INTO users (tenant_id, role_id, full_name, email, auth_id, status)
-       VALUES ($1,'operator',$2,$3,$4,'active')`,
-      [tenant.tenant_id, fullName, user.email, user.id]);
+    const full = await inTenant(pool, tenant.tenant_id, async (c) => {
+      const count = await c.query('SELECT count(*)::int AS n FROM users WHERE tenant_id = $1', [tenant.tenant_id]);
+      if (count.rows[0].n >= tenant.max_users) return true;
+      await c.query(
+        `INSERT INTO users (tenant_id, role_id, full_name, email, auth_id, status)
+         VALUES ($1,'operator',$2,$3,$4,'active')`,
+        [tenant.tenant_id, fullName, user.email, user.id]);
+      return false;
+    });
+    if (full) return res.status(403).json({ error: 'this organization has reached its member limit' });
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'this email already belongs to an organization' });
     throw e;
@@ -175,11 +260,13 @@ export default async function handler(req, res) {
     const pool = getPool();
     if (action === 'wipe') return await wipe(req, res, pool);
     if (action === 'wipe-cron') return await wipeCron(req, res, pool);
+    if (action === 'tid-check') return await tidCheck(req, res, pool);
     const { user, error } = await callerFromToken(req);
     if (error) return res.status(401).json({ error });
     if (action === 'register') return await register(req, res, pool, user);
     if (action === 'join')     return await join(req, res, pool, user);
-    return res.status(404).json({ error: 'unknown action; use /api/orgs/register or /api/orgs/join' });
+    if (action === 'me')       return await me(req, res, pool, user);
+    return res.status(404).json({ error: 'unknown action; use /api/orgs/register, /join, /me or /tid-check' });
   } catch (e) {
     console.error('[orgs]', e);
     return res.status(500).json({ error: e.message });

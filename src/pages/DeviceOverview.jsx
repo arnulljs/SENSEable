@@ -17,6 +17,22 @@ function relTime(ts) {
 }
 import InteractiveMap from './InteractiveMap';
 
+// Read-only: the network setup the node reported on its retained config topic.
+function HwConfig({ cfg }) {
+  const cell = cfg.mode === 'CELLULAR';
+  const link = cell ? cfg.apn && `APN ${cfg.apn}` : cfg.ssid && `Wi-Fi ${cfg.ssid}`;
+  return (
+    <div className="hw-config" title="Hardware configuration reported by the node">
+      <span className={`hw-mode ${cell ? 'cell' : cfg.mode === 'WIFI' ? 'wifi' : ''}`}>{cfg.mode ?? 'Unknown'}</span>
+      {link && <span>{link}</span>}
+      {cfg.broker && <span className="hw-broker">Broker {cfg.broker}</span>}
+      <span className="hw-synced" title={new Date(cfg.syncedAt).toLocaleString()}>
+        Config synced {relTime(cfg.syncedAt)}
+      </span>
+    </div>
+  );
+}
+
 // Stable identity: a fresh [] on each render would change hook dependency
 // identity every pass, defeating the memoisation below.
 const EMPTY = [];
@@ -159,6 +175,7 @@ export default function DeviceOverview({
                   </div>
 
                   {/* Device body (expanded) */}
+                  {expandedDevices[device.id] && device.hwConfig && <HwConfig cfg={device.hwConfig} />}
                   {expandedDevices[device.id] && (
                     device.modules.length === 0 ? (
                       <div className="device-offline-msg">

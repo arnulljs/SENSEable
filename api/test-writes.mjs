@@ -120,7 +120,8 @@ try {
   const sorted = (o) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
   is('stored payload is the built envelope', sorted(stored.rows[0].payload), sorted(e));
   const act = await withTenantScope('aquatech', (c) =>
-    c.query("SELECT last_ack, state, mode FROM actuators WHERE actuator_code = 'out3'"));
+    c.query(`SELECT a.last_ack, a.state, a.mode FROM actuators a JOIN devices d USING (device_id)
+              WHERE d.node_id = 'N001' AND a.actuator_code = 'out3'`));
   is('actuator reads pending at once (cross-operator lockout)',
     [act.rows[0].last_ack, act.rows[0].state, act.rows[0].mode], ['pending', 1, 'bin']);
 

@@ -71,6 +71,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
     SELECT
       d.device_id, d.node_id, d.name AS device_name, d.status AS device_status,
       d.comm_mode, d.uptime_s, d.rssi, d.free_heap, d.last_seen, d.lwt_online,
+      d.active_hw_mode, d.wifi_ssid, d.cell_apn, d.target_broker, d.last_config_sync,
       t.tenant_id, t.slug AS tenant_slug,
       m.module_id, m.i2c_address, m.name AS module_name,
       m.last_seen AS module_last_seen, m.configured AS module_configured,
@@ -106,6 +107,12 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
         rssi: r.rssi,
         freeHeap: r.free_heap,
         lastSeen: r.last_seen ? new Date(r.last_seen).getTime() : null,
+        // Configuration twin (API migration 019): what the node last reported on
+        // its retained config topic. Read-only.
+        hwConfig: r.last_config_sync ? {
+          mode: r.active_hw_mode, ssid: r.wifi_ssid, apn: r.cell_apn,
+          broker: r.target_broker, syncedAt: new Date(r.last_config_sync).getTime(),
+        } : null,
         configured: r.device_configured ?? true,
         modules: [],
         actuators: [],
@@ -215,6 +222,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       commMode: d.commMode,
       uptime: d.uptime, rssi: d.rssi, freeHeap: d.freeHeap,
       lastSeen: d.lastSeen ?? null,
+      hwConfig: d.hwConfig,
       active: d._lwtOnline !== false && (freshly(d._lastSeenRaw, now) || modules.some((m) => m.active)),
       configured: d.configured ?? true,
       modules,
