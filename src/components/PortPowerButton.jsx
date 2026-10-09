@@ -13,7 +13,8 @@
 // might be a working sensor someone else installed. So a channel with live data
 // gets an explicit warning naming its current reading, while a channel that's
 // already silent switches off without ceremony.
-import { useConfirmPopover } from './useConfirmPopover';
+import { createPortal } from 'react-dom';
+import { useConfirmPopover, POPOVER_FIXED } from './useConfirmPopover';
 
 const PowerIcon = ({ on }) => (
   <svg viewBox="0 0 16 16" width="13" height="13" fill="none"
@@ -29,7 +30,7 @@ export default function PortPowerButton({
   onToggle,        // (enabled, reason) => Promise
   canEdit = false,
 }) {
-  const { busy, setBusy, confirming, setConfirming, error, setError, wrapRef } =
+  const { busy, setBusy, confirming, setConfirming, error, setError, wrapRef, popRef } =
     useConfirmPopover();
 
   if (!canEdit) return null;
@@ -65,10 +66,11 @@ export default function PortPowerButton({
                          color: 'var(--warning, #B45309)' }}>
           <PowerIcon on />
         </button>
-        <div
+        {createPortal(<div
+          ref={popRef}
           onClick={(e) => e.stopPropagation()}
           style={{
-            position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 40,
+            ...POPOVER_FIXED,
             width: 236, padding: 10, borderRadius: 8, textAlign: 'left',
             background: 'var(--bg-1, #fff)',
             border: '1px solid var(--warning, #F59E0B)',
@@ -108,7 +110,7 @@ export default function PortPowerButton({
               }}
             >Keep on</button>
           </div>
-        </div>
+        </div>, document.body)}
       </span>
     );
   }

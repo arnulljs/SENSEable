@@ -11,7 +11,8 @@
 // action that cannot succeed.
 //
 // Confirmation is an anchored popover; see useConfirmPopover.js for why.
-import { useConfirmPopover } from './useConfirmPopover';
+import { createPortal } from 'react-dom';
+import { useConfirmPopover, POPOVER_FIXED } from './useConfirmPopover';
 
 const TrashIcon = () => (
   <svg viewBox="0 0 16 16" width="12" height="12" fill="none"
@@ -27,7 +28,7 @@ export default function RemoveButton({
   onRemove,        // () => Promise
   title = 'Remove',
 }) {
-  const { busy, setBusy, confirming, setConfirming, error, setError, wrapRef } =
+  const { busy, setBusy, confirming, setConfirming, error, setError, wrapRef, popRef } =
     useConfirmPopover();
 
   if (active) return null;
@@ -68,11 +69,12 @@ export default function RemoveButton({
         <TrashIcon />
       </button>
 
-      {confirming && (
+      {confirming && createPortal(
         <div
+          ref={popRef}
           onClick={(e) => e.stopPropagation()}
           style={{
-            position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 40,
+            ...POPOVER_FIXED,
             width: 232, padding: 10, borderRadius: 8, textAlign: 'left',
             background: 'var(--bg-1, #fff)',
             border: '1px solid var(--border, #E2E8F0)',
@@ -108,7 +110,8 @@ export default function RemoveButton({
               }}
             >Cancel</button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </span>
   );
