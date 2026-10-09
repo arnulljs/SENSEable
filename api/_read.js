@@ -26,14 +26,14 @@
 // it's redundant but harmless, and it keeps one code path for all three.
 
 const HISTORY_CAP = Number(process.env.HISTORY_CAP ?? 40);
-// The cloud sees telemetry through the sync worker, which pushes every
-// SYNC_INTERVAL_MS (30 s by default). Judging freshness with the edge's bare 30 s
-// window made every channel flicker Offline between passes, so the cloud window
-// is the edge's plus the replication lag it is looking through.
-// Match the edge's window exactly (store.js STALE_MS). The old +60s "sync lag"
-// cushion kept a node online up to a minute after the edge dropped it — the
-// live-vs-offline discrepancy. Presence is the node's property, not the tier's.
-const STALE_MS = Number(process.env.STALE_MS ?? 30_000);
+// Presence here is judged from devices.last_seen, which only moves when the
+// Lambda bridge runs (once a minute) or the sync worker pushes. With the edge's
+// bare 30 s window a node publishing every few seconds showed Offline for about
+// half of every minute. So the window is the edge's plus that refresh lag.
+// A node that really drops still shows Offline promptly: the broker publishes its
+// LWT (~1.5x keepalive after the socket dies) and lwt_online === false forces
+// Offline below, whatever this window says.
+const STALE_MS = Number(process.env.STALE_MS ?? 30_000) + Number(process.env.CLOUD_REFRESH_LAG_MS ?? 60_000);
 
 // Mirrors store.js: "active" = reported within the staleness window. The UI uses
 // it to decide whether a remove button is offered, so both tiers must agree.
