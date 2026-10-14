@@ -857,3 +857,8 @@ input, select, textarea { font-family: inherit; }
 
 .auth-testflag { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--gray-text, #64748b); cursor: pointer; }
 .auth-testflag input { width: 15px; height: 15px; accent-color: var(--blue, #2563EB); cursor: pointer; }
+
+/* Calibration rig (Calibration page) */
+.rig-note { font-size: 12px; line-height: 1.45; color: var(--text-2); background: var(--gray-bg); border-radius: var(--radius-sm); padding: 8px 10px; margin: -4px 0 12px; }
+.rig-note.rig-err { color: var(--red-text, #b91c1c); background: var(--red-bg); }
+.formula-prov { font-family: inherit; font-size: 11px; color: var(--text-3); margin-top: 3px; white-space: normal; }

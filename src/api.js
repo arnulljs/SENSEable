@@ -231,7 +231,8 @@ export const fetchChannelAssignments = () => get('/channel-assignments');
 
 export const markAllNotificationsRead = () => send('POST', '/notifications/read-all');
 export const markNotificationRead = (id) => send('POST', `/notifications/${id}/read`);
-export const createFormula = (label, formula) => send('POST', '/formulas', { label, formula });
+export const createFormula = (label, formula, calibration = null) =>
+  send('POST', '/formulas', { label, formula, ...(calibration ? { calibration } : {}) });
 export const deleteFormula = (id) => send('DELETE', `/formulas/${id}`);
 export const assignChannel = (board, channel, formulaLabel) =>
   send('PUT', `/channel-assignments/${board}/${channel}`, { formulaLabel });

@@ -307,12 +307,13 @@ export async function readFormulas(client, { tenantSlug = null } = {}) {
   const filter = tenantSlug ? 'WHERE t.slug = $1' : '';
   const params = tenantSlug ? [tenantSlug] : [];
   const { rows } = await client.query(`
-    SELECT f.formula_id, f.label, f.expression, t.slug
+    SELECT f.formula_id, f.label, f.expression, f.calibration, t.slug
     FROM calibration_formulas f JOIN tenants t ON t.tenant_id = f.tenant_id
     ${filter}
     ORDER BY f.created_at`, params);
   return rows.map((f) => ({
     id: f.formula_id, tenantId: f.slug, label: f.label, formula: f.expression,
+    calibration: f.calibration ?? null,   // how it was obtained (migration 021)
   }));
 }
 

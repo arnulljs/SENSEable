@@ -1,4 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { connectRig, serialSupported } from '../lib/calRig';
 import { savedFormulas as initialFormulas, channelAssignments as initAssignments } from '../mockData';
 import {
   fetchFormulas, createFormula, deleteFormula as apiDeleteFormula,
@@ -38,6 +40,19 @@ const PRESETS = [
   { label: 'pH (atlas scientific)', formula: 'x * (-0.001693) + 14.011' },
 ];
 
+// One line for the formula bank: how the formula was obtained.
+function describeCalibration(c) {
+  const n = c.points?.length ?? 0;
+  const parts = [
+    { unguided: 'Regression', '1-point': '1-point', '2-point': '2-point', preset: 'Preset', custom: 'Custom' }[c.method] ?? c.method,
+    n ? `${n} point${n === 1 ? '' : 's'}` : null,
+    c.r2 != null ? `R² ${(c.r2 * 100).toFixed(2)}%` : null,
+    c.rig_id ? c.rig_id : (n ? 'entered by hand' : null),
+    c.calibrated_at ? new Date(c.calibrated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : null,
+  ];
+  return parts.filter(Boolean).join(' · ');
+}
+
 // ── icons ─────────────────────────────────────────────────────────────────────
 const IconOverview = () => (
   <svg viewBox="0 0 16 16" fill="currentColor" width={15} height={15}>
@@ -67,9 +82,20 @@ export default function Calibration({ devices: devicesProp }) {
 
   // ── Calibration Module state ──────────────────────────────────────────────
   const [ready, setReady]           = useState(false);
-  const [serialPort, setSerialPort] = useState('');
-  const [sensorCh, setSensorCh]     = useState('');
   const [calMode, setCalMode]       = useState('unguided');
+
+  // The ESP8266 calibration rig over Web Serial (lib/calRig.js). Each Measure
+  // asks it for a 20-sample average on A0; `readings` keeps the last reading per
+  // input so a saved formula records the rig, counts and millivolts it came from.
+  const { currentOrg } = useAuth();
+  const tenantTid = currentOrg?.tid ?? null;
+  const [rig, setRig]             = useState(null);
+  const [rigId, setRigId]         = useState('');
+  const [rigErr, setRigErr]       = useState('');
+  const [measuring, setMeasuring] = useState(null);
+  const [readings, setReadings]   = useState({});
+  const rigRef = useRef(null);
+  useEffect(() => () => { rigRef.current?.close(); }, []);
 
   // Unguided state
   const [unitInput, setUnitInput]       = useState('');
@@ -130,10 +156,48 @@ export default function Calibration({ devices: devicesProp }) {
   );
 
   // ── Helpers: Unguided ────────────────────────────────────────────────────
+  // ── Helpers: calibration rig ─────────────────────────────────────────────
+  async function connect() {
+    setRigErr('');
+    try {
+      const r = await connectRig({ onClose: () => { rigRef.current = null; setRig(null); setRigErr('Calibration rig disconnected.'); } });
+      rigRef.current = r; setRig(r);
+    } catch (e) {
+      if (e?.name !== 'NotFoundError') setRigErr(e.message);   // NotFoundError = picker cancelled
+    }
+  }
+  async function disconnect() {
+    const r = rigRef.current; rigRef.current = null; setRig(null);
+    await r?.close();
+  }
+  // Fills one ADC input from the rig. `key` names the input (unguided, g1, g2lo, g2hi).
+  async function measure(key, setAdc) {
+    if (!rig) { setRigErr('Connect the calibration rig first.'); return; }
+    if (!tenantTid) { setRigErr('This organization has no Tenant ID yet, so the rig will refuse the request.'); return; }
+    setMeasuring(key); setRigErr('');
+    try {
+      const m = await rig.measure({ tenantId: tenantTid });
+      setAdc(String(m.rawAdc));
+      setReadings(prev => ({ ...prev, [key]: m }));
+      if (m.rigId) setRigId(m.rigId);
+    } catch (e) {
+      setRigErr(e.message);
+    } finally {
+      setMeasuring(null);
+    }
+  }
+  // The rig reading behind an input, if its count is still what was measured
+  // (typing over it turns the point into a manual one).
+  const readingFor = (key, adc) => (readings[key] && String(readings[key].rawAdc) === String(adc) ? readings[key] : null);
+  const pointRecord = (unit, adc, key) => ({
+    unit: Number(unit), raw_adc: Number(adc), millivolts: readingFor(key, adc)?.millivolts ?? null,
+  });
+
   function addDataPoint() {
     const u = parseFloat(unitInput), a = parseFloat(adcInput);
     if (isNaN(u) || isNaN(a)) return;
-    setDataPoints(prev => [...prev, { unit: u, adc: a }]);
+    const mv = readingFor('unguided', adcInput)?.millivolts ?? null;
+    setDataPoints(prev => [...prev, { unit: u, adc: a, mv }]);
     setUnitInput(''); setAdcInput('');
     setRegression(null); setSavedMsg('');
   }
@@ -141,10 +205,6 @@ export default function Calibration({ devices: devicesProp }) {
   function removeDataPoint(idx) {
     setDataPoints(prev => prev.filter((_, i) => i !== idx));
     setRegression(null); setSavedMsg('');
-  }
-
-  function simulateMeasure() {
-    setAdcInput((Math.random() * 15000 + 5000).toFixed(0));
   }
 
   function runRegression() {
@@ -167,8 +227,8 @@ export default function Calibration({ devices: devicesProp }) {
   //
   // POST /formulas upserts by label, so re-saving an existing label edits it —
   // which is the behaviour the two callers below already assumed locally.
-  async function persistFormula(label, formula) {
-    const saved = await createFormula(label, formula);
+  async function persistFormula(label, formula, calibration = null) {
+    const saved = await createFormula(label, formula, calibration);
     // Re-read rather than splicing the response in: assignments can change
     // server-side as a side effect, and the bank is small enough that a round
     // trip is cheaper than reconciling two sources of truth.
@@ -182,7 +242,11 @@ export default function Calibration({ devices: devicesProp }) {
     const formula = buildUnguidedFormula();
     setBusy(true);
     try {
-      await persistFormula(label, formula);
+      const measured = dataPoints.some(p => p.mv != null);
+      await persistFormula(label, formula, {
+        method: 'unguided', rig_id: measured ? rigId || null : null, r2: regression.r2,
+        points: dataPoints.map(p => ({ unit: p.unit, raw_adc: p.adc, millivolts: p.mv ?? null })),
+      });
       setSavedMsg(`"${label}" saved successfully.`);
       setDataPoints([]); setRegression(null); setFormulaLabel('');
       setUnitInput(''); setAdcInput('');
@@ -224,7 +288,13 @@ export default function Calibration({ devices: devicesProp }) {
     const label = guidedLabel.trim();
     setBusy(true);
     try {
-      await persistFormula(label, guidedResult.formula);
+      const points = guidedType === '1-point' ? [pointRecord(g1Known, g1Adc, 'g1')]
+        : guidedType === '2-point' ? [pointRecord(g2Low, g2LowAdc, 'g2lo'), pointRecord(g2High, g2HighAdc, 'g2hi')]
+        : [];
+      const measured = points.some(p => p.millivolts != null);
+      await persistFormula(label, guidedResult.formula, {
+        method: guidedType, rig_id: measured ? rigId || null : null, points,
+      });
       setSavedMsg(`"${label}" saved successfully.`);
       setGuidedResult(null); setGuidedLabel('');
       setG1Known(''); setG1Adc('');
@@ -338,23 +408,32 @@ export default function Calibration({ devices: devicesProp }) {
               </button>
             </div>
 
-            {/* Detect rows */}
+            {/* Calibration rig (ESP8266 over USB, Web Serial) */}
             <div className="detect-row">
               <div className="field">
-                <label>Serial Port</label>
-                <input className="input-field" placeholder="e.g. COM3 or /dev/ttyUSB0"
-                  value={serialPort} onChange={e => setSerialPort(e.target.value)} />
+                <label>Calibration Rig</label>
+                <div className="input-field" style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg)' }}>
+                  <span className={`status-dot ${rig ? 'online' : 'offline'}`} />
+                  <span style={{ fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {rig ? (rigId || 'Connected — press Measure') : 'Not connected'}
+                  </span>
+                </div>
               </div>
-              <button className="detect-btn" onClick={() => setSerialPort('COM3')}>Detect</button>
+              {rig
+                ? <button className="detect-btn" onClick={disconnect}>Disconnect</button>
+                : <button className="detect-btn" onClick={connect} disabled={!serialSupported}>Connect</button>}
             </div>
-            <div className="detect-row">
-              <div className="field">
-                <label>Sensor Channel</label>
-                <input className="input-field" placeholder="e.g. A0"
-                  value={sensorCh} onChange={e => setSensorCh(e.target.value)} />
+            <div style={{ fontSize: 11.5, color: 'var(--text-3)', margin: '-4px 0 12px' }}>
+              Rig channel <strong>A0</strong> · 20-sample average · requests carry Tenant ID{' '}
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{tenantTid ?? '—'}</span>
+            </div>
+            {!serialSupported && (
+              <div className="rig-note">
+                This browser can&rsquo;t talk to USB devices. Use Chrome or Edge on a computer to measure with the
+                rig, or type ADC counts in by hand.
               </div>
-              <button className="detect-btn" onClick={() => setSensorCh('A0')}>Detect</button>
-            </div>
+            )}
+            {rigErr && <div className="rig-note rig-err">{rigErr}</div>}
 
             {/* Mode tabs */}
             <div className="cal-tabs">
@@ -379,7 +458,10 @@ export default function Calibration({ devices: devicesProp }) {
                       value={unitInput} onChange={e => setUnitInput(e.target.value)} />
                     <input className="input-field" placeholder="ADC raw" type="number"
                       value={adcInput} onChange={e => setAdcInput(e.target.value)} />
-                    <button className="measure-btn" onClick={simulateMeasure}>Measure</button>
+                    <button className="measure-btn" disabled={!rig || measuring != null}
+                      onClick={() => measure('unguided', setAdcInput)}>
+                      {measuring === 'unguided' ? 'Measuring…' : 'Measure'}
+                    </button>
                     <button
                       onClick={() => { setUnitInput(''); setAdcInput(''); }}
                       title="Clear inputs"
@@ -396,7 +478,9 @@ export default function Calibration({ devices: devicesProp }) {
                       {dataPoints.map((pt, i) => (
                         <div className="dp-row" key={i}>
                           <span>{pt.unit}</span>
-                          <span>{pt.adc}</span>
+                          <span title={pt.mv != null ? `${pt.mv} mV, from the rig` : 'Entered by hand'}>
+                            {pt.adc}{pt.mv == null && <span style={{ color: 'var(--text-3)' }}> · manual</span>}
+                          </span>
                           <button className="dp-del" onClick={() => removeDataPoint(i)}>✕</button>
                         </div>
                       ))}
@@ -501,9 +585,9 @@ export default function Calibration({ devices: devicesProp }) {
                         value={g1Known} onChange={e => setG1Known(e.target.value)} />
                       <input className="input-field" placeholder="Raw ADC count" type="number"
                         value={g1Adc} onChange={e => setG1Adc(e.target.value)} />
-                      <button className="measure-btn"
-                        onClick={() => setG1Adc((Math.random() * 15000 + 5000).toFixed(0))}>
-                        Measure
+                      <button className="measure-btn" disabled={!rig || measuring != null}
+                        onClick={() => measure('g1', setG1Adc)}>
+                        {measuring === 'g1' ? 'Measuring…' : 'Measure'}
                       </button>
                     </div>
                   </div>
@@ -518,9 +602,9 @@ export default function Calibration({ devices: devicesProp }) {
                         value={g2Low} onChange={e => setG2Low(e.target.value)} />
                       <input className="input-field" placeholder="Raw ADC (low)" type="number"
                         value={g2LowAdc} onChange={e => setG2LowAdc(e.target.value)} />
-                      <button className="measure-btn"
-                        onClick={() => setG2LowAdc((Math.random() * 6000 + 4000).toFixed(0))}>
-                        Measure
+                      <button className="measure-btn" disabled={!rig || measuring != null}
+                        onClick={() => measure('g2lo', setG2LowAdc)}>
+                        {measuring === 'g2lo' ? 'Measuring…' : 'Measure'}
                       </button>
                     </div>
                     <div className="cal-step-title" style={{ marginTop: 12 }}>Step 2: High Reference Point</div>
@@ -529,9 +613,9 @@ export default function Calibration({ devices: devicesProp }) {
                         value={g2High} onChange={e => setG2High(e.target.value)} />
                       <input className="input-field" placeholder="Raw ADC (high)" type="number"
                         value={g2HighAdc} onChange={e => setG2HighAdc(e.target.value)} />
-                      <button className="measure-btn"
-                        onClick={() => setG2HighAdc((Math.random() * 6000 + 12000).toFixed(0))}>
-                        Measure
+                      <button className="measure-btn" disabled={!rig || measuring != null}
+                        onClick={() => measure('g2hi', setG2HighAdc)}>
+                        {measuring === 'g2hi' ? 'Measuring…' : 'Measure'}
                       </button>
                     </div>
                   </div>
@@ -655,7 +739,12 @@ export default function Calibration({ devices: devicesProp }) {
                       {formulas.map(f => (
                         <tr key={f.id}>
                           <td className="formula-label-cell">{f.label}</td>
-                          <td className="formula-code">{f.formula}</td>
+                          <td className="formula-code">
+                            {f.formula}
+                            {f.calibration && (
+                              <div className="formula-prov">{describeCalibration(f.calibration)}</div>
+                            )}
+                          </td>
                           <td>
                             <button className="dp-del" title="Delete"
                               disabled={busy || isReadOnlyTier}

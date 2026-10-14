@@ -53,9 +53,34 @@ export const markNotificationRead = async (client, { id }) => {
 
 // ── Calibration formulas ────────────────────────────────────────────────────
 
+// How the formula was obtained (API migration 021). Only known fields are kept,
+// numbers are checked, and the time is the server's, so the record can be
+// trusted as an audit trail. null = typed in by hand / older client.
+const CAL_METHODS = new Set(['unguided', '1-point', '2-point', 'preset', 'custom']);
+function cleanCalibration(c) {
+  if (c == null) return null;
+  if (typeof c !== 'object' || !CAL_METHODS.has(c.method)) throw bad(400, 'calibration.method is invalid');
+  const num = (v) => (v == null || v === '' ? null : Number(v));
+  const points = (Array.isArray(c.points) ? c.points : []).slice(0, 100).map((p) => ({
+    unit: num(p?.unit), raw_adc: num(p?.raw_adc), millivolts: num(p?.millivolts),
+  }));
+  if (points.some((p) => [p.unit, p.raw_adc, p.millivolts].some((v) => v !== null && !Number.isFinite(v)))) {
+    throw bad(400, 'calibration points must be numbers');
+  }
+  const r2 = num(c.r2);
+  return {
+    method: c.method,
+    rig_id: typeof c.rig_id === 'string' && c.rig_id ? c.rig_id.slice(0, 64) : null,
+    points,
+    r2: Number.isFinite(r2) ? r2 : null,
+    calibrated_at: new Date().toISOString(),
+  };
+}
+
 export const createFormula = async (client, { tenantSlug, body }) => {
   const { label, formula } = body ?? {};
   if (!label || !formula) throw bad(400, 'label and formula required');
+  const calibration = cleanCalibration(body?.calibration);
 
   const { rows } = await client.query(
     `SELECT tenant_id FROM tenants WHERE slug = $1`, [tenantSlug]);
@@ -66,14 +91,15 @@ export const createFormula = async (client, { tenantSlug, body }) => {
   // this exact formula during an outage and replicated it up. Same label in the
   // same tenant is the same formula, and derive_pk() gives both the same id.
   const { rows: out } = await client.query(
-    `INSERT INTO calibration_formulas (tenant_id, label, expression)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (tenant_id, label) DO UPDATE SET expression = EXCLUDED.expression
-     RETURNING formula_id, label, expression`,
-    [tenantId, label, formula]);
+    `INSERT INTO calibration_formulas (tenant_id, label, expression, calibration)
+     VALUES ($1, $2, $3, $4::jsonb)
+     ON CONFLICT (tenant_id, label) DO UPDATE
+       SET expression = EXCLUDED.expression, calibration = EXCLUDED.calibration
+     RETURNING formula_id, label, expression, calibration`,
+    [tenantId, label, formula, calibration ? JSON.stringify(calibration) : null]);
 
   return { id: out[0].formula_id, tenantId: tenantSlug,
-           label: out[0].label, formula: out[0].expression };
+           label: out[0].label, formula: out[0].expression, calibration: out[0].calibration };
 };
 
 // ports.formula_id is ON DELETE SET NULL, so the database clears the formula
