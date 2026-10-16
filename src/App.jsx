@@ -464,9 +464,9 @@ export default function App() {
 
   // ── Enabling / disabling a channel ─────────────────────────────────────
   // Optimistic, because the operator is asserting a fact about the physical
-  // world ("nothing is plugged into A2") rather than requesting something that
-  // might be refused. The backend records it unconditionally; only a network
-  // failure can undo it, and then we put the flag back.
+  // world ("nothing is plugged into A2"). The one refusal — enabling a channel
+  // with no calibration formula (409) — is ruled out by PortPowerButton before
+  // the request goes out; any failure puts the flag back.
   async function setPortEnabledEntry(deviceId, moduleId, portId, enabled, reason) {
     // Before the optimistic update, not after: otherwise the toggle flips, a
     // doomed request goes out, and it snaps back.

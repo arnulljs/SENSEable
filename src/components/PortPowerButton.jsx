@@ -13,6 +13,11 @@
 // might be a working sensor someone else installed. So a channel with live data
 // gets an explicit warning naming its current reading, while a channel that's
 // already silent switches off without ceremony.
+//
+// SWITCHING ON NEEDS A FORMULA
+// New channels arrive disabled, and the backend refuses to enable one without a
+// calibration formula (409). The button says so up front instead of sending a
+// request that can only be refused.
 import { createPortal } from 'react-dom';
 import { useConfirmPopover, POPOVER_FIXED } from './useConfirmPopover';
 
@@ -26,7 +31,7 @@ const PowerIcon = ({ on }) => (
 );
 
 export default function PortPowerButton({
-  port,            // needs { id, label, enabled, active, value, unit, status }
+  port,            // needs { id, label, enabled, active, value, unit, status, formulaLabel }
   onToggle,        // (enabled, reason) => Promise
   canEdit = false,
 }) {
@@ -36,6 +41,7 @@ export default function PortPowerButton({
   if (!canEdit) return null;
 
   const enabled = port.enabled !== false;
+  const needsFormula = !enabled && !port.formulaLabel;
 
   async function apply(next, reason) {
     setBusy(true);
@@ -52,7 +58,8 @@ export default function PortPowerButton({
 
   function click(e) {
     e.stopPropagation();
-    if (!enabled) return apply(true, null);          // re-enabling is never risky
+    if (needsFormula) return;
+    if (!enabled) return apply(true, null);          // calibrated, so enabling is safe
     // Disabling a channel that's actively reporting deserves a second look.
     if (port.active) return setConfirming(true);
     return apply(false, 'no sensor connected');
@@ -120,14 +127,19 @@ export default function PortPowerButton({
       type="button"
       onClick={click}
       disabled={busy}
-      title={enabled
+      title={error ?? (enabled
         ? 'Disable this channel (use for inputs with nothing connected)'
-        : 'Re-enable this channel'}
+        : needsFormula
+          ? `Assign a calibration formula to ${port.id} on the Calibration page, then enable it`
+          : 'Enable this channel')}
       aria-label={enabled ? 'Disable channel' : 'Enable channel'}
+      aria-disabled={needsFormula || undefined}
       style={{
-        border: 'none', background: 'none', cursor: busy ? 'wait' : 'pointer',
+        border: 'none', background: 'none',
+        cursor: busy ? 'wait' : (needsFormula ? 'not-allowed' : 'pointer'),
         padding: 2, lineHeight: 0, flexShrink: 0,
-        color: enabled ? 'var(--text-3, #94A3B8)' : 'var(--blue, #2563EB)',
+        color: error ? 'var(--fault, #DC2626)'
+          : (enabled || needsFormula ? 'var(--text-3, #94A3B8)' : 'var(--blue, #2563EB)'),
         opacity: busy ? 0.4 : (enabled ? 0.55 : 1),
       }}
       onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}

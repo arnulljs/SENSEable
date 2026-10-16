@@ -190,6 +190,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
         configured: p.configured ?? true,
         enabled: p.enabled !== false,
         disabledReason: p.disabledReason ?? null,
+        formulaLabel: p._formulaLabel ?? null,
       }));
       const modActive = freshly(m._lastSeenRaw, now) || ports.some((p) => p.active);
       const considered = ports.map((p) => p.status).filter((x) => x !== 'Disabled');

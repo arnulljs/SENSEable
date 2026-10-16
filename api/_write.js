@@ -232,16 +232,27 @@ export const renameActuator = async (client, { deviceId, actuatorId, body }) => 
 // the second half to the node through the edge dispatcher.
 export const setPortEnabled = async (client, { deviceId, moduleId, portId, body }) => {
   const enabled = body?.enabled !== false;
+  const { rows: found } = await client.query(
+    `SELECT p.port_id, p.formula_id FROM ports p
+       JOIN modules m ON m.module_id = p.module_id
+       JOIN devices d ON d.device_id = m.device_id
+      WHERE d.node_id = $1 AND lower(m.i2c_address) = lower($2) AND p.port_code = $3
+      FOR UPDATE OF p`,
+    [nodeIdOf(deviceId), moduleId, portId]);
+  if (!found.length) throw bad(404, 'channel not found');
+  // Switching a channel ON requires a calibration formula, as on the edge
+  // (SENSEable-API store.setPortEnabled): an uncalibrated channel shows raw
+  // counts, and an empty input's counts look like a reading.
+  if (enabled && !found[0].formula_id) {
+    throw bad(409, `${portId} has no calibration formula — assign one on the Calibration page, then enable it`);
+  }
   const { rows } = await client.query(
-    `UPDATE ports SET enabled = $4
-       WHERE port_code = $3
-         AND module_id = (
-           SELECT m.module_id FROM modules m
-             JOIN devices d ON d.device_id = m.device_id
-            WHERE d.node_id = $1 AND lower(m.i2c_address) = lower($2))
+    `UPDATE ports SET enabled = $2,
+            disabled_reason = CASE WHEN $2 THEN NULL ELSE $3 END,
+            disabled_at     = CASE WHEN $2 THEN NULL ELSE now() END
+      WHERE port_id = $1
      RETURNING port_id, tenant_id, port_index`,
-    [nodeIdOf(deviceId), moduleId, portId, enabled]);
-  if (!rows.length) throw bad(404, 'channel not found');
+    [found[0].port_id, enabled, body?.reason ?? null]);
 
   // The wire action is directional: sensor_port_up / sensor_port_down, not a
   // single action with a state field. The database CHECK enforces the frozen
