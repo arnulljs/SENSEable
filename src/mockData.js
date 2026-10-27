@@ -238,10 +238,6 @@ export const savedFormulas = [
   { id: 3, label: 'salinity',    formula: '(+0.0000*x**0 - 20.0199576*x - 194.2342)/1000*3.0 + 7.0' },
 ];
 
-export const channelAssignments = {
-  'board-1': { A0: 'DO', A1: 'salinity', A2: 'temperaTURE', A3: null },
-};
-
 // Saved sensor profiles — reusable metadata templates (label, unit, range,
 // safe range) for the Edit Sensor feature. Letting a user pick "Dissolved
 // Oxygen (mg/L)" from a dropdown instead of re-typing the same six fields

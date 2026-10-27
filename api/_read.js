@@ -79,7 +79,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       p.range_min, p.range_max, p.safe_min, p.safe_max, p.active_flag,
       p.last_value, p.last_status, p.last_seen AS port_last_seen,
       p.configured AS port_configured, p.enabled AS port_enabled,
-      p.disabled_reason,
+      p.disabled_reason, p.conn_state,
       d.configured AS device_configured,
       f.label AS formula_label
     FROM devices d
@@ -150,9 +150,9 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       status: r.last_status ?? 'Offline',
       history: [],
       activeFlag: r.active_flag,
-      // The cloud tier has no live socket, so connState is derived from the
-      // last persisted discovery result rather than an in-flight packet.
-      connState: r.active_flag ? 'CONNECTED' : 'DISCONNECTED',
+      // The node's own report from its last discovery packet (migration 022);
+      // active_flag is the fallback until the first one after the migration.
+      connState: r.conn_state ?? (r.active_flag ? 'CONNECTED' : 'DISCONNECTED'),
       masked: false,
       lastSeen: r.port_last_seen ? new Date(r.port_last_seen).getTime() : null,
       configured: r.port_configured ?? true,
@@ -331,28 +331,6 @@ export async function readSensorProfiles(client, { tenantSlug = null } = {}) {
     rangeMin: p.range_min, rangeMax: p.range_max,
     safeMin: p.safe_min, safeMax: p.safe_max,
   }));
-}
-
-// Derived view over ports.formula_id, keyed by module then port:
-//   { "0x48": { "A0": "DO", "A1": null } }
-export async function readChannelAssignments(client, { tenantSlug = null } = {}) {
-  const filter = tenantSlug ? 'WHERE t.slug = $1' : '';
-  const params = tenantSlug ? [tenantSlug] : [];
-  const { rows } = await client.query(`
-    SELECT m.i2c_address, p.port_code, f.label AS formula_label
-    FROM ports p
-    JOIN modules m ON m.module_id = p.module_id
-    JOIN tenants t ON t.tenant_id = p.tenant_id
-    LEFT JOIN calibration_formulas f ON f.formula_id = p.formula_id
-    ${filter}
-    ORDER BY m.i2c_address, p.port_index`, params);
-
-  const out = {};
-  for (const r of rows) {
-    out[r.i2c_address] ??= {};
-    out[r.i2c_address][r.port_code] = r.formula_label ?? null;
-  }
-  return out;
 }
 
 export async function readMapSensors(client, { tenantSlug = null } = {}) {

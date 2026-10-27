@@ -59,6 +59,32 @@ const IconChevron = ({ open }) => (
 // user's organization by App.jsx — but falls back to the raw mockData
 // import so this component still works standalone (e.g. if it's ever
 // rendered outside the authenticated shell, or during local dev/testing).
+// The node's own report of this input, from its last discovery packet —
+// separate from the dashboard's on/off, which is what the operator asked for.
+// CONNECTED means the input is readable, not that a sensor is attached. Shown
+// amber while the two disagree (a command is on its way, or was refused).
+const NODE_STATE = { CONNECTED: 'node: on', DISABLED: 'node: off', DISCONNECTED: 'node: not readable' };
+function NodePortState({ port }) {
+  const text = NODE_STATE[port.connState];
+  if (!text) return null;
+  const wantOn = port.enabled !== false;
+  const nodeOn = port.connState !== 'DISABLED';
+  const mismatch = wantOn !== nodeOn || (wantOn && port.connState === 'DISCONNECTED');
+  return (
+    <span
+      title={mismatch
+        ? `The node reports ${port.connState} but this channel is switched ${wantOn ? 'on' : 'off'} here — waiting for the node to apply it`
+        : `Reported by the node: ${port.connState}`}
+      style={{
+        fontSize: 9.5, fontWeight: 600, letterSpacing: '.02em', whiteSpace: 'nowrap',
+        padding: '1px 5px', borderRadius: 4,
+        color: mismatch ? 'var(--warning, #B45309)' : 'var(--text-3, #94A3B8)',
+        background: mismatch ? 'rgba(245,158,11,.12)' : 'transparent',
+      }}
+    >{text}</span>
+  );
+}
+
 export default function DeviceOverview({
   devices: devicesProp,
   onSelectSensor,
@@ -70,6 +96,7 @@ export default function DeviceOverview({
   onRemoveModule,           // (deviceId, moduleId) => Promise
   onRemovePort,             // (deviceId, moduleId, portId) => Promise
   onSetPortEnabled,         // (deviceId, moduleId, portId, enabled, reason) => Promise
+  onAssignFormula,          // (deviceId, moduleId, portId, label) => Promise
   tenantId,
   creatorName,
 }) {
@@ -240,12 +267,16 @@ export default function DeviceOverview({
                                 >
                                   <div style={{ position: 'absolute', top: 6, right: 6, zIndex: 2,
                                                 display: 'flex', alignItems: 'center', gap: 2 }}>
+                                    <NodePortState port={port} />
                                     {typeof onSetPortEnabled === 'function' && (
                                       <PortPowerButton
                                         port={port}
                                         canEdit={canEdit}
                                         onToggle={(enabled, reason) =>
                                           onSetPortEnabled(device.id, mod.id, port.id, enabled, reason)}
+                                        onAssignFormula={typeof onAssignFormula === 'function'
+                                          ? (label) => onAssignFormula(device.id, mod.id, port.id, label)
+                                          : undefined}
                                       />
                                     )}
                                     {canEdit && typeof onRemovePort === 'function' && (

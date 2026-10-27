@@ -225,7 +225,6 @@ const send = (method, path, body) => request(method, path, body);
 export const fetchDevices = () => get('/devices');
 export const fetchNotifications = () => get('/notifications');
 export const fetchFormulas = () => get('/formulas');
-export const fetchChannelAssignments = () => get('/channel-assignments');
 
 // ── Writes (edge tier only — 405 on cloud) ──────────────────────────────────
 
@@ -234,8 +233,12 @@ export const markNotificationRead = (id) => send('POST', `/notifications/${id}/r
 export const createFormula = (label, formula, calibration = null) =>
   send('POST', '/formulas', { label, formula, ...(calibration ? { calibration } : {}) });
 export const deleteFormula = (id) => send('DELETE', `/formulas/${id}`);
-export const assignChannel = (board, channel, formulaLabel) =>
-  send('PUT', `/channel-assignments/${board}/${channel}`, { formulaLabel });
+// One port's calibration formula (null clears it). Addressed through the
+// device, because a board address alone is shared by every node at 0x48.
+export const assignPortFormula = (deviceId, moduleId, portId, formulaLabel) =>
+  send('PUT',
+    `/devices/${encodeURIComponent(deviceId)}/modules/${encodeURIComponent(moduleId)}/ports/${encodeURIComponent(portId)}/formula`,
+    { formulaLabel });
 
 // ── Renames (persist to the DB; response echoes the updated device) ─────────
 

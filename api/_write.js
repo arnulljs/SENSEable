@@ -111,21 +111,26 @@ export const deleteFormula = async (client, { id }) => {
   return { ok: true, removed: rowCount };
 };
 
-// ── Channel assignments ─────────────────────────────────────────────────────
-
-export const assignChannel = async (client, { board, channel, body }) => {
+// ── Calibration formula of one port ──────────────────────────────────────────
+// The port is addressed through its device (deviceId = "slug:nodeId"), like the
+// edge's PUT /devices/:d/modules/:m/ports/:p/formula. A board address alone is
+// not unique — every ADS1115 defaults to 0x48 — and the old address-only route
+// assigned the formula to whichever node the database returned first.
+export const assignPortFormula = async (client, { deviceId, moduleId, portId, body }) => {
   const label = body?.formulaLabel ?? null;
 
   const { rows: portRows } = await client.query(
-    `SELECT p.port_id, p.tenant_id
-       FROM ports p JOIN modules m ON m.module_id = p.module_id
-      WHERE lower(m.i2c_address) = lower($1) AND p.port_code = $2`,
-    [board, channel]);
-  if (!portRows.length) throw bad(404, `unknown channel ${board}/${channel}`);
-  const port = portRows[0];
+    `SELECT p.port_id FROM ports p
+       JOIN modules m ON m.module_id = p.module_id
+       JOIN devices d ON d.device_id = m.device_id
+      WHERE d.node_id = $1 AND lower(m.i2c_address) = lower($2) AND p.port_code = $3`,
+    [nodeIdOf(deviceId), moduleId, portId]);
+  if (!portRows.length) throw bad(404, `unknown channel ${moduleId}/${portId} on ${deviceId}`);
 
   let formulaId = null;
   if (label) {
+    // RLS confines this to the caller's tenant, so a same-named formula in
+    // another organization can never be picked.
     const { rows } = await client.query(
       'SELECT formula_id FROM calibration_formulas WHERE label = $1', [label]);
     if (!rows.length) throw bad(404, `unknown formula '${label}'`);
@@ -137,17 +142,9 @@ export const assignChannel = async (client, { board, channel, body }) => {
   // ingest pipeline on the old conversion after the operator changed it.
   await client.query(
     `UPDATE ports SET formula_id = $2, cal_type = $3 WHERE port_id = $1`,
-    [port.port_id, formulaId, formulaId ? 'expr' : 'linear']);
+    [portRows[0].port_id, formulaId, formulaId ? 'expr' : 'linear']);
 
-  const { rows: assigned } = await client.query(
-    `SELECT p.port_code, f.label
-       FROM ports p
-       JOIN modules m ON m.module_id = p.module_id
-       LEFT JOIN calibration_formulas f ON f.formula_id = p.formula_id
-      WHERE lower(m.i2c_address) = lower($1)
-      ORDER BY p.port_index`, [board]);
-
-  return Object.fromEntries(assigned.map((r) => [r.port_code, r.label ?? null]));
+  return { ok: true, formulaLabel: formulaId ? label : null };
 };
 
 // ── Interactive map ─────────────────────────────────────────────────────────

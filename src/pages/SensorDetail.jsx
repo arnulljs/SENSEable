@@ -34,9 +34,23 @@ function TrendChart({ history, rangeMin, rangeMax }) {
   const innerW = W - PAD_X * 2;
   const innerH = H - PAD_Y * 2;
   const span = rangeMax - rangeMin || 1;
-  const n = history.length;
+  // Only samples with a number can be drawn. A new or switched-off channel has
+  // none, and the area fill below needs a first and last point — without this
+  // guard the page threw on pts[0] and the whole app went blank.
+  const drawable = (history ?? []).filter((h) => Number.isFinite(Number(h.value)));
+  if (!drawable.length) {
+    return (
+      <div className="trend-chart" style={{
+        height: H, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 12, color: 'var(--text-3)',
+      }}>
+        No readings yet
+      </div>
+    );
+  }
+  const n = drawable.length;
 
-  const pts = history.map((h, i) => ({
+  const pts = drawable.map((h, i) => ({
     x: PAD_X + (i / Math.max(n - 1, 1)) * innerW,
     y: PAD_Y + innerH - ((h.value - rangeMin) / span) * innerH,
   }));
@@ -252,7 +266,9 @@ function EditSensorModal({ port, profiles, onSaveProfile, onDeleteProfile, onSav
 
 // ── Sensor Detail Page ───────────────────────────────────────────────────────
 export default function SensorDetail({ device, module, port, onBack, onUpdatePort }) {
-  const { label, unit, value, rangeMin, rangeMax, safeMin, safeMax, status, history } = port;
+  const { value, unit, rangeMin, rangeMax, safeMin, safeMax, status } = port;
+  const label = port.label || `Channel ${port.id}`;
+  const history = port.history ?? [];
   // Readings the edge recorded from the LOCAL broker while the cloud link was
   // down. On the cloud dashboard they arrived later through the sync worker, so
   // they are the visible proof that the backup reached the cloud.

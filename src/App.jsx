@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import ConnectionBanner from './components/ConnectionBanner';
+import ErrorBoundary from './components/ErrorBoundary';
 import DeviceOverview from './pages/DeviceOverview';
 import SensorDetail from './pages/SensorDetail';
 import Notifications from './pages/Notifications';
@@ -25,6 +26,7 @@ import {
   removeModule as apiRemoveModule,
   removePort as apiRemovePort,
   setPortEnabled as apiSetPortEnabled,
+  assignPortFormula as apiAssignPortFormula,
   isReadOnlyTier,
   fetchHealth,
   reportHealth,
@@ -134,6 +136,11 @@ function mergeTelemetry(localDevices, backendDevices) {
               lastSeen: bp.lastSeen ?? null,
               active: bp.active,
               enabled: bp.enabled,
+              disabledReason: bp.disabledReason ?? null,
+              // Server-owned, like `enabled`: without it a formula assigned
+              // after the first load never reached the power button, which
+              // stayed locked on "assign a calibration formula" until a reload.
+              formulaLabel: bp.formulaLabel ?? null,
               configured: bp.configured,
               activeFlag: bp.activeFlag,
               connState: bp.connState ?? null,
@@ -490,6 +497,32 @@ export default function App() {
     }
   }
 
+  // ── Assigning a channel's calibration formula ───────────────────────────
+  // Optimistic like the enable toggle, so the power button unlocks at once;
+  // a refused request puts the previous formula back and rethrows.
+  async function assignPortFormulaEntry(deviceId, moduleId, portId, formulaLabel) {
+    assertWritable('Assigning a calibration formula');
+    let previous = null;
+    const patch = (label) => (d) => (d.id !== deviceId ? d : {
+      ...d,
+      modules: d.modules.map(m => (m.id !== moduleId ? m : {
+        ...m,
+        ports: m.ports.map(p => {
+          if (p.id !== portId) return p;
+          previous = p.formulaLabel ?? null;
+          return { ...p, formulaLabel: label };
+        }),
+      })),
+    });
+    setAllDevicesState(prev => prev.map(patch(formulaLabel)));
+    try {
+      await apiAssignPortFormula(deviceId, moduleId, portId, formulaLabel);
+    } catch (e) {
+      setAllDevicesState(prev => prev.map(patch(previous)));
+      throw e;
+    }
+  }
+
   // ── Removing hardware ──────────────────────────────────────────────────
   // The backend is the authority on whether a removal is allowed (it refuses
   // with 409 while the hardware is still reporting), so we wait for it to
@@ -599,6 +632,7 @@ export default function App() {
         onRemoveModule={removeModuleEntry}
         onRemovePort={removePortEntry}
         onSetPortEnabled={setPortEnabledEntry}
+        onAssignFormula={assignPortFormulaEntry}
         tenantId={currentOrg.id}
         creatorName={currentUser.fullName}
       />
@@ -638,7 +672,7 @@ export default function App() {
           />
         );
       case 'calibration':
-        return <Calibration devices={orgDevices} />;
+        return <Calibration devices={orgDevices} onAssignFormula={assignPortFormulaEntry} />;
       case 'control':
         return <Actuators devices={orgDevices} onCommandActuator={commandActuator} canEdit={isDesigner && !isReadOnlyTier} onRenameActuator={renameActuatorName} />;
       case 'team':
@@ -657,7 +691,14 @@ export default function App() {
       />
       <main className="app-main">
         <ConnectionBanner />
-        {renderPage()}
+        {/* Keyed by what is on screen, so moving to another page or sensor
+            clears an error instead of leaving it stuck. */}
+        <ErrorBoundary
+          key={`${currentPage}|${selectedSensor ? Object.values(selectedSensor).join('|') : ''}`}
+          onReset={() => handleNavigate('home')}
+        >
+          {renderPage()}
+        </ErrorBoundary>
       </main>
     </div>
   );

@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { connectRig, serialSupported } from '../lib/calRig';
-import { savedFormulas as initialFormulas, channelAssignments as initAssignments } from '../mockData';
+import { savedFormulas as initialFormulas } from '../mockData';
 import {
   fetchFormulas, createFormula, deleteFormula as apiDeleteFormula,
-  fetchChannelAssignments, assignChannel as apiAssignChannel,
   isReadOnlyTier,
 } from '../api';
 
@@ -77,7 +76,10 @@ const IconMap = () => (
 // "hard rule" that this page only ever derives its board/channel list from
 // whatever `devices` it's handed is exactly what makes tenant-scoping a
 // one-line change here.
-export default function Calibration({ devices: devicesProp }) {
+export default function Calibration({
+  devices: devicesProp,
+  onAssignFormula,          // (deviceId, moduleId, portId, label|null) => Promise — App owns device state
+}) {
   const devices = devicesProp ?? EMPTY;
 
   // ── Calibration Module state ──────────────────────────────────────────────
@@ -120,24 +122,23 @@ export default function Calibration({ devices: devicesProp }) {
 
   // ── Manage Formulas state ─────────────────────────────────────────────────
   // Seeded from mockData so the page renders instantly and still works with no
-  // backend, then hydrated from the API below. The formula bank and channel
-  // assignments are REAL server-side resources (calibration_formulas and the
-  // ports.formula_label column), not local scratch state — a formula saved here
-  // is what the ingest pipeline evaluates against incoming ADC counts, so it has
-  // to persist or the calibration means nothing after a reload.
+  // backend, then hydrated from the API below. The formula bank is a REAL
+  // server-side resource (calibration_formulas), not local scratch state — a
+  // formula saved here is what the ingest pipeline evaluates against incoming
+  // ADC counts. Channel assignments are not kept here at all: each port in
+  // `devices` carries its own formulaLabel, so a channel is always named by its
+  // node as well as its board address (every ADS1115 defaults to 0x48).
   const [formulas, setFormulas]           = useState(initialFormulas);
-  const [assignments, setAssignments]     = useState(initAssignments);
   const [syncErr, setSyncErr]             = useState('');
   const [busy, setBusy]                   = useState(false);
 
-  // Pull the authoritative bank + assignments once on mount. On failure we keep
-  // the seed data and say so, rather than blanking a page the operator may be
+  // Pull the authoritative bank once on mount. On failure we keep the seed data
+  // and say so, rather than blanking a page the operator may be
   // mid-calibration on.
   const hydrate = useCallback(async () => {
     try {
-      const [f, a] = await Promise.all([fetchFormulas(), fetchChannelAssignments()]);
+      const f = await fetchFormulas();
       if (Array.isArray(f)) setFormulas(f);
-      if (a && typeof a === 'object') setAssignments(a);
       setSyncErr('');
     } catch (e) {
       setSyncErr(`Showing local data — could not reach the server (${e.message})`);
@@ -148,9 +149,10 @@ export default function Calibration({ devices: devicesProp }) {
   // Every board reported by any ESP32 node starts expanded — computed from
   // `devices` rather than a hardcoded board id, so this stays correct
   // regardless of how many boards are actually connected.
+  // Keyed by node AND board: two nodes can both have a board at 0x48.
   const [boardExpanded, setBoardExpanded] = useState(() =>
     devices.reduce((acc, d) => {
-      d.modules.forEach(m => { acc[m.id] = true; });
+      d.modules.forEach(m => { acc[`${d.id}|${m.id}`] = true; });
       return acc;
     }, {})
   );
@@ -229,9 +231,8 @@ export default function Calibration({ devices: devicesProp }) {
   // which is the behaviour the two callers below already assumed locally.
   async function persistFormula(label, formula, calibration = null) {
     const saved = await createFormula(label, formula, calibration);
-    // Re-read rather than splicing the response in: assignments can change
-    // server-side as a side effect, and the bank is small enough that a round
-    // trip is cheaper than reconciling two sources of truth.
+    // Re-read rather than splicing the response in: the bank is small enough
+    // that a round trip is cheaper than reconciling two sources of truth.
     await hydrate();
     return saved;
   }
@@ -314,20 +315,13 @@ export default function Calibration({ devices: devicesProp }) {
   // manipulation control and a lagging select feels broken. The value is also
   // already known-good (it comes from the bank), so the only failure mode is a
   // transport error — which we undo.
-  async function assignChannel(boardId, ch, label) {
-    const previous = assignments[boardId]?.[ch] ?? null;
-    const next = label || null;
-    const apply = (v) => setAssignments(prev => ({
-      ...prev,
-      [boardId]: { ...(prev[boardId] || {}), [ch]: v },
-    }));
-
-    apply(next);
+  async function assignChannel(board, portId, label) {
+    if (typeof onAssignFormula !== 'function') return;
+    setSyncErr('');
     try {
-      await apiAssignChannel(boardId, ch, next);
+      await onAssignFormula(board.deviceId, board.id, portId, label || null);
     } catch (e) {
-      apply(previous);
-      setSyncErr(`Could not assign ${ch} — ${e.message}`);
+      setSyncErr(`Could not assign ${portId} on ${board.deviceName} — ${e.message}`);
     }
   }
 
@@ -353,7 +347,7 @@ export default function Calibration({ devices: devicesProp }) {
   }
 
   // ── Derived ──────────────────────────────────────────────────────────────
-  const allBoards = devices.flatMap(d => d.modules.map(m => ({ ...m, deviceName: d.name })));
+  const allBoards = devices.flatMap(d => d.modules.map(m => ({ ...m, deviceId: d.id, deviceName: d.name, key: `${d.id}|${m.id}` })));
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
@@ -682,27 +676,27 @@ export default function Calibration({ devices: devicesProp }) {
               </div>
 
               {allBoards.map(board => (
-                <div className="board-section" key={board.id}>
+                <div className="board-section" key={board.key}>
                   <div className="board-section-title">
-                    <span>{board.name}</span>
+                    <span>{board.deviceName} · {board.name}</span>
                     <button
-                      onClick={() => setBoardExpanded(p => ({ ...p, [board.id]: !p[board.id] }))}
+                      onClick={() => setBoardExpanded(p => ({ ...p, [board.key]: !p[board.key] }))}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: 'var(--text-2)' }}>
-                      {boardExpanded[board.id] ? '▾' : '▸'}
+                      {boardExpanded[board.key] ? '▾' : '▸'}
                     </button>
                   </div>
 
-                  {boardExpanded[board.id] && (
+                  {boardExpanded[board.key] && (
                     <>
-                      {Object.entries(assignments[board.id] || {}).map(([ch, assigned]) => (
-                        <div className="channel-row" key={ch}>
-                          <span className="channel-id">Channel {ch}</span>
+                      {board.ports.map(port => (
+                        <div className="channel-row" key={port.id}>
+                          <span className="channel-id">Channel {port.id}</span>
                           <select
                             className="input-field"
                             style={{ width: 150, padding: '3px 7px', fontSize: 12 }}
-                            value={assigned ?? ''}
-                            disabled={busy || isReadOnlyTier}
-                            onChange={e => assignChannel(board.id, ch, e.target.value)}
+                            value={port.formulaLabel ?? ''}
+                            disabled={busy || isReadOnlyTier || typeof onAssignFormula !== 'function'}
+                            onChange={e => assignChannel(board, port.id, e.target.value)}
                           >
                             <option value="">— Unassigned —</option>
                             {formulas.map(f => (

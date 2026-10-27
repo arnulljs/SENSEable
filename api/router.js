@@ -14,11 +14,11 @@
 import { readHandler } from './_db.js';
 import {
   readDevices, readNotifications, readMapSensors, readFormulas,
-  readSensorProfiles, readChannelAssignments, readCommands,
+  readSensorProfiles, readCommands,
 } from './_read.js';
 import {
   writeHandler, markAllNotificationsRead, markNotificationRead,
-  createFormula, deleteFormula, fitLinear, assignChannel, saveMapSensors,
+  createFormula, deleteFormula, fitLinear, assignPortFormula, saveMapSensors,
   renameDevice, renameModule, renameActuator, setPortEnabled,
   removeDevice, removeModule, removePort, postCommand,
 } from './_write.js';
@@ -33,7 +33,6 @@ const READS = {
   'map-sensors':         [readMapSensors,        10],
   'formulas':            [readFormulas,          30],
   'sensor-profiles':     [readSensorProfiles,    30],
-  'channel-assignments': [readChannelAssignments, 30],
 };
 
 // Writes, matched against the path segments. `:name` captures a segment and is
@@ -47,7 +46,6 @@ const WRITES = [
   ['POST',   ['formulas'],                             createFormula],
   ['DELETE', ['formulas', ':id'],                      deleteFormula],
 
-  ['PUT',    ['channel-assignments', ':board', ':channel'], assignChannel],
   ['PUT',    ['map-sensors'],                          saveMapSensors],
 
   ['POST',   ['commands'],                             postCommand],
@@ -57,6 +55,8 @@ const WRITES = [
   ['PATCH',  ['devices', ':deviceId', 'actuators', ':actuatorId'], renameActuator],
   ['PATCH',  ['devices', ':deviceId', 'modules', ':moduleId', 'ports', ':portId', 'enabled'],
                                                        setPortEnabled],
+  ['PUT',    ['devices', ':deviceId', 'modules', ':moduleId', 'ports', ':portId', 'formula'],
+                                                       assignPortFormula],
 
   ['DELETE', ['devices', ':deviceId'],                 removeDevice],
   ['DELETE', ['devices', ':deviceId', 'modules', ':moduleId'], removeModule],

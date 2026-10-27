@@ -1,6 +1,6 @@
 // Exercises every cloud-tier mutation against a real database + real RLS.
 import {
-  createFormula, deleteFormula, assignChannel, saveMapSensors,
+  createFormula, deleteFormula, assignPortFormula, saveMapSensors,
   markAllNotificationsRead, renameDevice, renameModule, setPortEnabled,
   postCommand, fitLinear, removePort,
 } from './_write.js';
@@ -72,16 +72,22 @@ try {
   const again = await run(createFormula, { body: { label: 'DO mg/L', formula: 'raw * 0.002' } });
   is('same label is the same row (no duplicate)', again.id, f.id);
 
-  const assigned = await run(assignChannel, { board: '0x48', channel: 'A0', body: { formulaLabel: 'DO mg/L' } });
-  is('assignChannel binds A0', assigned.A0, 'DO mg/L');
+  const P = (portId) => ({ deviceId: DEV, moduleId: '0x48', portId });
+  const formulaOf = (portId) => run((c) => c.query(
+    `SELECT f.label FROM ports p JOIN modules m USING (module_id) JOIN devices d USING (device_id)
+       LEFT JOIN calibration_formulas f ON f.formula_id = p.formula_id
+      WHERE d.node_id = 'N001' AND m.i2c_address = '0x48' AND p.port_code = $1`, [portId]))
+    .then((r) => r.rows[0]?.label ?? null);
 
-  const cleared = await run(assignChannel, { board: '0x48', channel: 'A0', body: { formulaLabel: null } });
-  is('assignChannel clears A0', cleared.A0, null);
+  const assigned = await run(assignPortFormula, { ...P('A0'), body: { formulaLabel: 'DO mg/L' } });
+  is('assignPortFormula binds A0', [assigned.formulaLabel, await formulaOf('A0')], ['DO mg/L', 'DO mg/L']);
 
-  await run(assignChannel, { board: '0x48', channel: 'A1', body: { formulaLabel: 'DO mg/L' } });
+  const cleared = await run(assignPortFormula, { ...P('A0'), body: { formulaLabel: null } });
+  is('assignPortFormula clears A0', [cleared.formulaLabel, await formulaOf('A0')], [null, null]);
+
+  await run(assignPortFormula, { ...P('A1'), body: { formulaLabel: 'DO mg/L' } });
   await run(deleteFormula, { id: f.id });
-  const afterDelete = await run(assignChannel, { board: '0x48', channel: 'A2', body: { formulaLabel: null } });
-  is('deleting a formula unassigns its channels', afterDelete.A1, null);
+  is('deleting a formula unassigns its channels', await formulaOf('A1'), null);
 
   is('markAllNotificationsRead', await run(markAllNotificationsRead), { ok: true, unread: 0 });
   is('renameDevice', (await run(renameDevice, { deviceId: DEV, body: { name: 'Pond A Node' } })).name, 'Pond A Node');

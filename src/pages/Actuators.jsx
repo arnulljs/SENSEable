@@ -254,7 +254,12 @@ function ActuatorCard({ device, actuator, onCommand, canEdit = false, onRename }
 
       {/* Ack + last-updated + command inspector */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--border-light)', paddingTop: 10 }}>
-        <span className={`status-badge ${ackClass(a.lastAck)}`}>{a.lastAck}</span>
+        <span className={`status-badge ${ackClass(a.lastAck)}`}
+              title={a.lastAck === 'expired'
+                ? 'The node received this command more than 5 minutes after it was sent and ignored it on purpose.'
+                : undefined}>
+          {a.lastAck === 'expired' ? 'expired — try again' : a.lastAck}
+        </span>
         <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{ago(a.updatedAt)}</span>
         <button
           onClick={() => setShowCmd(s => !s)}
