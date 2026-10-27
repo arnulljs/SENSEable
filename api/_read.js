@@ -150,9 +150,10 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       status: r.last_status ?? 'Offline',
       history: [],
       activeFlag: r.active_flag,
-      // The node's own report from its last discovery packet (migration 022);
-      // active_flag is the fallback until the first one after the migration.
-      connState: r.conn_state ?? (r.active_flag ? 'CONNECTED' : 'DISCONNECTED'),
+      // The node's own report from its last discovery packet (migration 022).
+      // NULL until it sends one — not guessed from active_flag, which only ever
+      // meant "had readings" and showed up as a made-up node state.
+      connState: r.conn_state ?? null,
       masked: false,
       lastSeen: r.port_last_seen ? new Date(r.port_last_seen).getTime() : null,
       configured: r.port_configured ?? true,

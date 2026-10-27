@@ -343,7 +343,7 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
         {/* 1. Sensor Reading */}
         <div className="detail-card">
           <div className="detail-card-title">Sensor Reading</div>
-          <GaugeCard port={port} />
+          <GaugeCard port={port} boardActive={module.active !== false} />
           <div className="reading-range">
             <span>Range: {rangeMin}–{rangeMax} {unit}</span><br />
             <span>Safe: {safeMin}–{safeMax} {unit}</span>

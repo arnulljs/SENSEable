@@ -71,7 +71,34 @@ function formatValue(v) {
   return Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(2);
 }
 
-export default function GaugeCard({ port, onClick }) {
+// The node's own report of this input, from its last discovery packet —
+// separate from On/Off, which is what the operator asked for. CONNECTED means
+// the input is readable, not that a sensor is attached. Shown only when the
+// node has actually reported it (no guessing from older data) and only while
+// the board is reporting: a state from a board last seen yesterday isn't the
+// node's real state. Amber when the node and the dashboard disagree.
+const NODE_STATE = { CONNECTED: 'node: on', DISABLED: 'node: off', DISCONNECTED: 'node: not readable' };
+function NodeStatePill({ port, boardActive }) {
+  const text = NODE_STATE[port.connState];
+  if (!text || boardActive === false) return null;
+  const wantOn = port.enabled !== false;
+  const mismatch = wantOn ? port.connState !== 'CONNECTED' : port.connState === 'CONNECTED';
+  return (
+    <span
+      title={mismatch
+        ? `The node reports ${port.connState} but this channel is switched ${wantOn ? 'on' : 'off'} here — waiting for the node to apply it`
+        : `Reported by the node: ${port.connState}`}
+      style={{
+        fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 999, whiteSpace: 'nowrap',
+        border: `1px solid ${mismatch ? '#F59E0B' : '#E2E8F0'}`,
+        background: mismatch ? 'rgba(245,158,11,.12)' : 'transparent',
+        color: mismatch ? '#B45309' : '#64748B',
+      }}
+    >{text}</span>
+  );
+}
+
+export default function GaugeCard({ port, onClick, boardActive }) {
   const { id, label, unit, value, rangeMin, rangeMax, status } = port;
   const enabled = port.enabled !== false;
 
@@ -185,6 +212,7 @@ export default function GaugeCard({ port, onClick }) {
         </span>
 
         {enabled && <span className={`status-badge ${status}`}>{status}</span>}
+        <NodeStatePill port={port} boardActive={boardActive} />
       </div>
     </div>
   );
