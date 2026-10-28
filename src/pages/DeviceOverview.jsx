@@ -200,6 +200,14 @@ export default function DeviceOverview({
                               title="Rename expansion board"
                             />
                             <span className="module-address">{mod.address}</span>
+                            {mod.active !== false && mod.ports.length > 0 && (
+                              <span
+                                style={{ fontSize: 11, color: 'var(--text-3)', whiteSpace: 'nowrap' }}
+                                title="The board is reporting; this counts the channels switched on"
+                              >
+                                {mod.ports.filter((p) => p.enabled !== false).length} of {mod.ports.length} channels on
+                              </span>
+                            )}
                             {mod.active === false && mod.lastSeen && (
                               <span
                                 style={{

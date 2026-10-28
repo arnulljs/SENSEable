@@ -207,7 +207,8 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
         lastSeen: m.lastSeen ?? null,
         active: modActive,
         configured: m.configured ?? true,
-        status: (!modActive || !considered.length) ? 'offline' : (UI_TO_DEVICE[worst] ?? 'offline'),
+        // Reporting with every channel off is online, as in deriveModuleStatus().
+        status: !modActive ? 'offline' : (UI_TO_DEVICE[worst] ?? 'offline'),
         ports,
       };
     });
