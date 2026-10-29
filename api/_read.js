@@ -80,6 +80,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       d.device_id, d.node_id, d.name AS device_name, d.status AS device_status,
       d.comm_mode, d.uptime_s, d.rssi, d.free_heap, d.last_seen, d.lwt_online, d.tlm_interval_ms,
       d.active_hw_mode, d.wifi_ssid, d.cell_apn, d.target_broker, d.last_config_sync,
+      d.last_reset, d.last_crash_step, d.last_crash_task, d.prev_uptime_s,
       t.tenant_id, t.slug AS tenant_slug,
       m.module_id, m.i2c_address, m.name AS module_name,
       m.last_seen AS module_last_seen, m.configured AS module_configured,
@@ -87,7 +88,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       p.range_min, p.range_max, p.safe_min, p.safe_max, p.active_flag,
       p.last_value, p.last_status, p.last_seen AS port_last_seen,
       p.configured AS port_configured, p.enabled AS port_enabled,
-      p.disabled_reason, p.conn_state,
+      p.disabled_reason, p.conn_state, p.last_code,
       d.configured AS device_configured,
       f.label AS formula_label
     FROM devices d
@@ -120,6 +121,10 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
         hwConfig: r.last_config_sync ? {
           mode: r.active_hw_mode, ssid: r.wifi_ssid, apn: r.cell_apn,
           broker: r.target_broker, syncedAt: new Date(r.last_config_sync).getTime(),
+          // Why the node last restarted (API migration 024); crash fields only
+          // after a crash.
+          reset: r.last_reset ?? null, crashStep: r.last_crash_step ?? null,
+          crashTask: r.last_crash_task ?? null, prevUptimeS: r.prev_uptime_s ?? null,
         } : null,
         configured: r.device_configured ?? true,
         modules: [],
@@ -171,6 +176,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       _uuid: r.port_id,
       _lastSeenRaw: r.port_last_seen,
       _formulaLabel: r.formula_label ?? null,
+      _code: r.last_code ?? null,
     });
   }
 
@@ -202,6 +208,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
         enabled: p.enabled !== false,
         disabledReason: p.disabledReason ?? null,
         formulaLabel: p._formulaLabel ?? null,
+        code: p._code ?? null,   // latest window's status code (2 = saturated)
       }));
       const modActive = freshly(m._lastSeenRaw, now, win) || ports.some((p) => p.active);
       const considered = ports.map((p) => p.status).filter((x) => x !== 'Disabled');
@@ -252,8 +259,8 @@ async function attachHistory(client, byDevice, portUuids) {
   if (!portUuids.length) return;
 
   const { rows } = await client.query(`
-    SELECT port_id, ts, value, status, origin FROM (
-      SELECT port_id, ts, value, status, origin,
+    SELECT port_id, ts, value, status, origin, code, n, win_ms, value_min, value_max FROM (
+      SELECT port_id, ts, value, status, origin, code, n, win_ms, value_min, value_max,
              row_number() OVER (PARTITION BY port_id ORDER BY ts DESC) AS rn
       FROM readings
       WHERE port_id = ANY($1::uuid[])
@@ -268,6 +275,10 @@ async function attachHistory(client, byDevice, portUuids) {
     byPort.get(r.port_id).push({
       timestamp: fmtTs(new Date(r.ts)), value: r.value, status: r.status,
       source: r.origin ?? 'cloud',
+      // Window statistics (API migration 024), same shape as the edge's
+      // historyStats(); null on rows from older firmware.
+      code: r.code ?? null, n: r.n ?? null, winMs: r.win_ms ?? null,
+      min: r.value_min ?? null, max: r.value_max ?? null,
     });
   }
   for (const d of byDevice.values())

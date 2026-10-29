@@ -23,6 +23,8 @@
 // can be done by interpolating the path `d` string, which is why the fill is
 // drawn as one full semicircle that gets progressively revealed.
 
+import { statusLabel, windowLine } from '../lib/windowStats';
+
 const STATUS_COLOR = {
   Normal:   '#22C55E',
   Warning:  '#F59E0B',
@@ -186,6 +188,18 @@ export default function GaugeCard({ port, onClick, boardActive }) {
         {enabled ? formatValue(value) : '—'}
         <span className="gauge-unit">{unit}</span>
       </div>
+      {enabled && (() => {
+        // The latest window behind the value: its extremes and how many
+        // samples it averaged. Amber when far fewer samples than seconds.
+        const w = windowLine(port.history?.[port.history.length - 1]);
+        return w && (
+          <div title={w.low ? 'Fewer samples than seconds in this window: reads failed or the board was replugged' : 'Latest window: extremes and samples averaged'}
+               style={{ fontSize: 10, marginTop: -2, marginBottom: 4, textAlign: 'center',
+                        color: w.low ? '#B45309' : 'var(--text-3, #94A3B8)' }}>
+            {w.text}
+          </div>
+        );
+      })()}
 
       {/* Two independent badges: whether the channel is switched on, and — only
           if it is — how its reading looks. */}
@@ -211,7 +225,7 @@ export default function GaugeCard({ port, onClick, boardActive }) {
           {enabled ? 'On' : 'Off'}
         </span>
 
-        {enabled && <span className={`status-badge ${status}`}>{status}</span>}
+        {enabled && <span className={`status-badge ${status}`}>{statusLabel(status, port.code)}</span>}
         <NodeStatePill port={port} boardActive={boardActive} />
       </div>
     </div>

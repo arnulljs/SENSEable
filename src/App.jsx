@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import ConnectionBanner from './components/ConnectionBanner';
 import ErrorBoundary from './components/ErrorBoundary';
+import { codeDrivesStatus } from './lib/windowStats';
 import DeviceOverview from './pages/DeviceOverview';
 import SensorDetail from './pages/SensorDetail';
 import Notifications from './pages/Notifications';
@@ -122,13 +123,15 @@ function mergeTelemetry(localDevices, backendDevices) {
             // Recomputing unconditionally (the old behaviour) discarded the two
             // verdicts only the server can make, so a dead or disabled channel
             // kept showing a cheerful colour derived from its last known value.
-            const status = (bp.status === 'Disabled' || bp.status === 'Offline')
+            // A status set by the node's own code (2 saturated, 3 read failed)
+            // is server-only too: the value alone can't show it.
+            const status = (bp.status === 'Disabled' || bp.status === 'Offline' || codeDrivesStatus(bp.code))
               ? bp.status
               : computeSensorStatus(value, lp.rangeMin, lp.rangeMax, lp.safeMin, lp.safeMax);
 
             const history = (bp.history || []).map(h => ({
               ...h,
-              status: computeSensorStatus(
+              status: codeDrivesStatus(h.code) ? h.status : computeSensorStatus(
                 h.value, lp.rangeMin, lp.rangeMax, lp.safeMin, lp.safeMax
               ),
             }));
@@ -138,6 +141,7 @@ function mergeTelemetry(localDevices, backendDevices) {
               lastSeen: bp.lastSeen ?? null,
               active: bp.active,
               enabled: bp.enabled,
+              code: bp.code ?? null,
               disabledReason: bp.disabledReason ?? null,
               // Server-owned, like `enabled`: without it a formula assigned
               // after the first load never reached the power button, which

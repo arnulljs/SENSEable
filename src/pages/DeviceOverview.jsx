@@ -18,6 +18,33 @@ function relTime(ts) {
 import InteractiveMap from './InteractiveMap';
 
 // Read-only: the network setup the node reported on its retained config topic.
+// Why the node last restarted, from its retained config (firmware 2026-10-29).
+// Brownout, watchdog and panic resets are unplanned, so they stand out; after a
+// crash the node also says where it was (step, task) and for how long it ran.
+const BAD_RESETS = new Set(['brownout', 'panic', 'interrupt_watchdog', 'task_watchdog', 'watchdog']);
+function fmtUptime(sec) {
+  if (!Number.isFinite(sec)) return null;
+  if (sec < 10) return `${sec.toFixed(1)} s`;
+  if (sec < 120) return `${Math.round(sec)} s`;
+  if (sec < 7200) return `${Math.round(sec / 60)} min`;
+  return `${(sec / 3600).toFixed(1)} h`;
+}
+function RestartInfo({ cfg }) {
+  if (!cfg.reset && !cfg.crashStep) return null;
+  const bad = BAD_RESETS.has(cfg.reset);
+  const up = fmtUptime(cfg.prevUptimeS);
+  return (
+    <span className="hw-restart" style={{
+      color: bad ? 'var(--fault, #DC2626)' : undefined, fontWeight: bad ? 600 : undefined,
+    }} title={cfg.crashTask ? `Task running at the crash: ${cfg.crashTask}` : 'Reason the node last restarted'}>
+      Last restart: {cfg.reset ?? 'unknown'}
+      {cfg.crashStep && (
+        <> · Last crash: {cfg.reset ?? 'unknown'}{up ? ` at ~${up}` : ''}, step: {cfg.crashStep}</>
+      )}
+    </span>
+  );
+}
+
 function HwConfig({ cfg }) {
   const cell = cfg.mode === 'CELLULAR';
   const link = cell ? cfg.apn && `APN ${cfg.apn}` : cfg.ssid && `Wi-Fi ${cfg.ssid}`;
@@ -26,6 +53,7 @@ function HwConfig({ cfg }) {
       <span className={`hw-mode ${cell ? 'cell' : cfg.mode === 'WIFI' ? 'wifi' : ''}`}>{cfg.mode ?? 'Unknown'}</span>
       {link && <span>{link}</span>}
       {cfg.broker && <span className="hw-broker">Broker {cfg.broker}</span>}
+      <RestartInfo cfg={cfg} />
       <span className="hw-synced" title={new Date(cfg.syncedAt).toLocaleString()}>
         Config synced {relTime(cfg.syncedAt)}
       </span>

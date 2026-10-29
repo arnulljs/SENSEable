@@ -1,6 +1,7 @@
 // SensorDetail.jsx — Per-port detail view (gauge + trend + history + Edit Sensor)
 import { useState } from 'react';
 import GaugeCard from '../components/GaugeCard';
+import { statusLabel, windowLine, fmt } from '../lib/windowStats';
 import { sensorProfiles as defaultProfiles } from '../mockData';
 
 // Saved sensor profiles persist in localStorage (same pattern as the
@@ -50,9 +51,14 @@ function TrendChart({ history, rangeMin, rangeMax }) {
   }
   const n = drawable.length;
 
+  const yOf = (v) => PAD_Y + innerH - ((v - rangeMin) / span) * innerH;
   const pts = drawable.map((h, i) => ({
     x: PAD_X + (i / Math.max(n - 1, 1)) * innerW,
-    y: PAD_Y + innerH - ((h.value - rangeMin) / span) * innerH,
+    y: yOf(h.value),
+    // The window's extremes, drawn as a whisker behind the mean.
+    lo: Number.isFinite(h.min) ? yOf(h.min) : null,
+    hi: Number.isFinite(h.max) ? yOf(h.max) : null,
+    tip: [h.timestamp, `${h.value}`, windowLine(h)?.text].filter(Boolean).join(' · '),
   }));
 
   const polyline = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
@@ -78,6 +84,12 @@ function TrendChart({ history, rangeMin, rangeMax }) {
       {/* Fill area */}
       <polygon points={areaPoints} fill="#2563EB" opacity={0.07} />
 
+      {/* Min–max of each window */}
+      {pts.map((p, i) => p.lo != null && p.hi != null && (
+        <line key={`w${i}`} x1={p.x} x2={p.x} y1={p.lo} y2={p.hi}
+          stroke="#2563EB" strokeOpacity={0.35} strokeWidth={3} strokeLinecap="round" />
+      ))}
+
       {/* Line */}
       <polyline points={polyline} fill="none" stroke="#2563EB" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
 
@@ -87,7 +99,7 @@ function TrendChart({ history, rangeMin, rangeMax }) {
           fill={i === n - 1 ? '#2563EB' : '#93C5FD'}
           stroke={i === n - 1 ? 'white' : 'none'}
           strokeWidth={i === n - 1 ? 1.5 : 0}
-        />
+        ><title>{p.tip}</title></circle>
       ))}
     </svg>
   );
@@ -367,7 +379,16 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
             {value}
             <span className="rtv-unit">{unit}</span>
           </div>
-          <span className={`status-badge ${status}`}>{status}</span>
+          <span className={`status-badge ${status}`}>{statusLabel(status, port.code)}</span>
+          {(() => {
+            const w = windowLine(history[history.length - 1]);
+            return w && (
+              <div style={{ marginTop: 6, fontSize: 11.5, color: w.low ? '#B45309' : 'var(--text-3)' }}
+                   title={w.low ? 'Fewer samples than seconds in this window: reads failed or the board was replugged' : 'Latest window'}>
+                {w.text}
+              </div>
+            );
+          })()}
           <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-3)' }}>
             <div>Device: {device.name}</div>
             <div>Comm: {device.commMode}</div>
@@ -396,6 +417,8 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
             <tr>
               <th>Timestamp</th>
               <th>Value</th>
+              <th>Min / Max</th>
+              <th title="Samples averaged / seconds in the window">Samples</th>
               <th>Status</th>
               <th>Source</th>
             </tr>
@@ -404,8 +427,12 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
             {[...history].reverse().map((row, i) => (
               <tr key={i}>
                 <td className="mono">{row.timestamp}</td>
-                <td className="mono">{row.value} {unit}</td>
-                <td><span className={`status-badge ${row.status}`}>{row.status}</span></td>
+                <td className="mono">{row.value ?? '—'} {row.value != null && unit}</td>
+                <td className="mono">{row.min != null && row.max != null ? `${fmt(row.min)} – ${fmt(row.max)}` : '—'}</td>
+                <td className="mono" style={{ color: windowLine(row)?.low ? '#B45309' : undefined }}>
+                  {row.n != null ? `${row.n}${row.winMs ? `/${Math.round(row.winMs / 1000)}` : ''}` : '—'}
+                </td>
+                <td><span className={`status-badge ${row.status}`}>{statusLabel(row.status, row.code)}</span></td>
                 <td>
                   {row.source === 'local'
                     ? <span className="source-badge backup" title="Recorded by the on-site server while the cloud link was down, then synced to the cloud">↺ Edge backup</span>
