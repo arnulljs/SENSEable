@@ -45,6 +45,38 @@ function RestartInfo({ cfg }) {
   );
 }
 
+// The node's last NETWORK outage (not a reboot), from its config: e.g. "Last
+// outage: 3 min at 14:02, Wi-Fi signal lost, 3 readings recovered".
+const OUTAGE_REASON = {
+  BEACON_TIMEOUT: 'Wi-Fi signal lost',
+  NO_AP_FOUND: 'Wi-Fi network not found',
+  AUTH_FAIL: 'Wi-Fi password rejected',
+  HANDSHAKE_TIMEOUT: 'Wi-Fi password rejected',
+  connection_lost: 'broker connection lost',
+};
+function outageText(d) {
+  const parts = [];
+  const dur = fmtUptime(d.offlineS);
+  const at = d.at ? new Date(d.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
+  parts.push([dur, at && `at ${at}`].filter(Boolean).join(' ') || 'unknown length');
+  parts.push(OUTAGE_REASON[d.reason]
+    ?? (d.cause === 'mqtt' ? `broker unreachable${d.reason ? ` (${d.reason})` : ''}`
+      : d.cause === 'wifi' ? `Wi-Fi lost${d.reason ? ` (${d.reason})` : ''}` : d.reason ?? 'cause unknown'));
+  if (d.rowsSpooled > 0) parts.push(`${d.rowsSpooled} reading${d.rowsSpooled === 1 ? '' : 's'} recovered`);
+  return `Last outage: ${parts.join(', ')}`;
+}
+function OutageInfo({ d }) {
+  if (!d) return null;
+  return (
+    <span className="hw-outage" title={[
+      d.at ? new Date(d.at * 1000).toLocaleString() : 'time unknown (node clock not set)',
+      d.cause && `cause: ${d.cause}`, d.reason && `reason: ${d.reason}${d.reasonCode != null ? ` (${d.reasonCode})` : ''}`,
+    ].filter(Boolean).join(' · ')}>
+      {outageText(d)}
+    </span>
+  );
+}
+
 function HwConfig({ cfg }) {
   const cell = cfg.mode === 'CELLULAR';
   const link = cell ? cfg.apn && `APN ${cfg.apn}` : cfg.ssid && `Wi-Fi ${cfg.ssid}`;
@@ -54,6 +86,7 @@ function HwConfig({ cfg }) {
       {link && <span>{link}</span>}
       {cfg.broker && <span className="hw-broker">Broker {cfg.broker}</span>}
       <RestartInfo cfg={cfg} />
+      <OutageInfo d={cfg.lastDisconnect} />
       <span className="hw-synced" title={new Date(cfg.syncedAt).toLocaleString()}>
         Config synced {relTime(cfg.syncedAt)}
       </span>

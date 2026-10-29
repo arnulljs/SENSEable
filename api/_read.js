@@ -80,7 +80,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       d.device_id, d.node_id, d.name AS device_name, d.status AS device_status,
       d.comm_mode, d.uptime_s, d.rssi, d.free_heap, d.last_seen, d.lwt_online, d.tlm_interval_ms,
       d.active_hw_mode, d.wifi_ssid, d.cell_apn, d.target_broker, d.last_config_sync,
-      d.last_reset, d.last_crash_step, d.last_crash_task, d.prev_uptime_s,
+      d.last_reset, d.last_crash_step, d.last_crash_task, d.prev_uptime_s, d.last_disconnect,
       t.tenant_id, t.slug AS tenant_slug,
       m.module_id, m.i2c_address, m.name AS module_name,
       m.last_seen AS module_last_seen, m.configured AS module_configured,
@@ -125,6 +125,8 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
           // after a crash.
           reset: r.last_reset ?? null, crashStep: r.last_crash_step ?? null,
           crashTask: r.last_crash_task ?? null, prevUptimeS: r.prev_uptime_s ?? null,
+          // Last network outage (API migration 025), absent until the first one.
+          lastDisconnect: r.last_disconnect ?? null,
         } : null,
         configured: r.device_configured ?? true,
         modules: [],
