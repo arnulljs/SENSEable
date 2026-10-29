@@ -17,6 +17,7 @@
 // transaction the read routes use, and a failure there degrades to nulls rather
 // than taking liveness down with it.
 import { getPool, withTenantScope } from './_db.js';
+import { staleWindowMs } from './_read.js';
 
 export default async function handler(req, res) {
   let base;
@@ -38,8 +39,11 @@ export default async function handler(req, res) {
                 count(*) FILTER (WHERE NOT synced) AS unsynced
            FROM readings`);
       const newest = rows[0].newest ? new Date(rows[0].newest).getTime() : null;
+      // "No recent telemetry" only once the slowest node has missed its window.
+      const iv = await client.query('SELECT max(tlm_interval_ms) AS ms FROM devices');
       return {
         newestTelemetryAgeMs: newest ? Date.now() - newest : null,
+        staleAfterMs: staleWindowMs(iv.rows[0].ms),
         // Non-zero should be impossible: the cloud is the sync DESTINATION, not
         // a source. A number here means a tier is running without TIER=cloud.
         unsyncedInCloud: Number(rows[0].unsynced),

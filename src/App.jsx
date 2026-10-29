@@ -26,6 +26,7 @@ import {
   removeModule as apiRemoveModule,
   removePort as apiRemovePort,
   setPortEnabled as apiSetPortEnabled,
+  setTlmInterval as apiSetTlmInterval,
   assignPortFormula as apiAssignPortFormula,
   isReadOnlyTier,
   fetchHealth,
@@ -80,6 +81,7 @@ function mergeTelemetry(localDevices, backendDevices) {
       // which is why a node publishing right now still read "last seen 22h ago".
       lastSeen: bd.lastSeen ?? null,
       hwConfig: bd.hwConfig ?? null,  // backend-owned, read-only
+      tlmIntervalMs: bd.tlmIntervalMs ?? null,  // node-reported (disco), read-only
       active: bd.active,
       configured: bd.configured,
       // Actuators: the backend now owns the cmd/ack lifecycle (last_ack, state,
@@ -497,6 +499,14 @@ export default function App() {
     }
   }
 
+  // ── Telemetry interval ──────────────────────────────────────────────────
+  // Not optimistic: the card shows the node's own disco value, so it changes
+  // only once the node has actually applied it.
+  async function setTlmIntervalEntry(deviceId, ms) {
+    assertWritable('Changing the telemetry interval');
+    await apiSetTlmInterval(deviceId, ms);
+  }
+
   // ── Assigning a channel's calibration formula ───────────────────────────
   // Optimistic like the enable toggle, so the power button unlocks at once;
   // a refused request puts the previous formula back and rethrows.
@@ -632,6 +642,7 @@ export default function App() {
         onRemoveModule={removeModuleEntry}
         onRemovePort={removePortEntry}
         onSetPortEnabled={setPortEnabledEntry}
+        onSetInterval={setTlmIntervalEntry}
         onAssignFormula={assignPortFormulaEntry}
         tenantId={currentOrg.id}
         creatorName={currentUser.fullName}

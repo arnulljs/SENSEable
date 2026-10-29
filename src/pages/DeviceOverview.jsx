@@ -33,6 +33,78 @@ function HwConfig({ cfg }) {
   );
 }
 
+// Telemetry interval (firmware 2026-10-29). Shows what the node last reported
+// in disco — never the value we sent — and stays "pending" until the two agree.
+const INTERVAL_PRESETS = [10_000, 60_000, 300_000, 900_000, 3_600_000];
+const IV_MIN = 5_000, IV_MAX = 3_600_000;
+function fmtInterval(ms) {
+  const s = Math.round(ms / 1000);
+  if (s % 3600 === 0) return `${s / 3600} h`;
+  if (s % 60 === 0) return `${s / 60} min`;
+  return `${s} s`;
+}
+
+function IntervalControl({ device, canEdit, onSetInterval }) {
+  const current = device.tlmIntervalMs;
+  const [pending, setPending] = useState(null);   // ms requested, until disco confirms
+  const [custom, setCustom] = useState('');
+  const [error, setError] = useState(null);
+  const waiting = pending != null && current !== pending;
+
+  async function apply(ms) {
+    setError(null);
+    if (!Number.isInteger(ms) || ms < IV_MIN || ms > IV_MAX) {
+      setError('Interval must be 5 s – 1 h');
+      return;
+    }
+    setPending(ms);
+    // A node that never confirms (offline; the command then expires) must not
+    // leave the control locked. A failed ACK also lands in Notifications.
+    setTimeout(() => setPending((p) => (p === ms ? null : p)), 5 * 60_000);
+    try {
+      await onSetInterval(device.id, ms);
+    } catch (e) {
+      setPending(null);
+      setError(e.message);
+    }
+  }
+
+  return (
+    <div className="hw-config" title="Each reading is the mean of 1-second samples over one interval">
+      <span>Telemetry every <strong>{current ? fmtInterval(current) : '—'}</strong></span>
+      <span style={{ color: 'var(--text-3)' }}>values are averages over this window</span>
+      {canEdit && typeof onSetInterval === 'function' && (
+        <span className="iv-edit">
+          <select
+            value=""
+            disabled={waiting}
+            onChange={(e) => e.target.value && apply(Number(e.target.value))}
+          >
+            <option value="">Change…</option>
+            {INTERVAL_PRESETS.map((ms) => (
+              <option key={ms} value={ms} disabled={ms === current}>{fmtInterval(ms)}</option>
+            ))}
+          </select>
+          <input
+            type="number" min={IV_MIN / 1000} max={IV_MAX / 1000} step="1"
+            placeholder="sec" value={custom} disabled={waiting}
+            onChange={(e) => setCustom(e.target.value)}
+            style={{ width: 70 }}
+          />
+          <button
+            className="btn-ghost" disabled={waiting || custom === ''}
+            onClick={() => { apply(Math.round(Number(custom) * 1000)); setCustom(''); }}
+          >
+            Set
+          </button>
+          {waiting && <span style={{ color: 'var(--text-3)' }}>pending {fmtInterval(pending)}…</span>}
+          {error && <span style={{ color: 'var(--red-text)' }}>{error}</span>}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // Stable identity: a fresh [] on each render would change hook dependency
 // identity every pass, defeating the memoisation below.
 const EMPTY = [];
@@ -71,6 +143,7 @@ export default function DeviceOverview({
   onRemovePort,             // (deviceId, moduleId, portId) => Promise
   onSetPortEnabled,         // (deviceId, moduleId, portId, enabled, reason) => Promise
   onAssignFormula,          // (deviceId, moduleId, portId, label) => Promise
+  onSetInterval,            // (deviceId, ms) => Promise
   tenantId,
   creatorName,
 }) {
@@ -177,6 +250,9 @@ export default function DeviceOverview({
 
                   {/* Device body (expanded) */}
                   {expandedDevices[device.id] && device.hwConfig && <HwConfig cfg={device.hwConfig} />}
+                  {expandedDevices[device.id] && (device.tlmIntervalMs != null || canEdit) && (
+                    <IntervalControl device={device} canEdit={canEdit} onSetInterval={onSetInterval} />
+                  )}
                   {expandedDevices[device.id] && (
                     device.modules.length === 0 ? (
                       <div className="device-offline-msg">

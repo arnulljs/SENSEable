@@ -31,6 +31,7 @@
 import { withTenantScope, callerTenant } from './_db.js';
 import { buildCommand, parsePortNumber, cmdTopic } from './_commands.js';
 import { publishOnce } from './_mqtt.js';
+import { staleWindowMs } from './_read.js';
 
 const bad = (status, message) => Object.assign(new Error(message), { status });
 
@@ -274,13 +275,14 @@ export const setPortEnabled = async (client, { deviceId, moduleId, portId, body 
 // Deletes stay guarded the same way the edge guards them: hardware that is still
 // reporting must not be removable, or it reappears on the next packet and the
 // operator is left wondering whether the delete worked.
-const STALE_MS = Number(process.env.STALE_MS ?? 30_000);
-
+// Same per-node window the read side uses, so the button the dashboard offers
+// and the check here agree: a node on a long interval is still "reporting"
+// between rows.
 const assertStale = async (client, sql, params, what) => {
   const { rows } = await client.query(sql, params);
   if (!rows.length) throw bad(404, `${what} not found`);
   const seen = rows[0].last_seen ? new Date(rows[0].last_seen).getTime() : 0;
-  if (Date.now() - seen <= STALE_MS) {
+  if (Date.now() - seen <= staleWindowMs(rows[0].tlm_interval_ms)) {
     throw bad(409, `${what} is still reporting — it can only be removed once offline`);
   }
   return rows[0];
@@ -288,7 +290,7 @@ const assertStale = async (client, sql, params, what) => {
 
 export const removeDevice = async (client, { deviceId }) => {
   const row = await assertStale(client,
-    'SELECT device_id, last_seen FROM devices WHERE node_id = $1',
+    'SELECT device_id, last_seen, tlm_interval_ms FROM devices WHERE node_id = $1',
     [nodeIdOf(deviceId)], 'device');
   await client.query('DELETE FROM devices WHERE device_id = $1', [row.device_id]);
   return { ok: true, removed: 1 };
@@ -296,7 +298,7 @@ export const removeDevice = async (client, { deviceId }) => {
 
 export const removeModule = async (client, { deviceId, moduleId }) => {
   const row = await assertStale(client,
-    `SELECT m.module_id, m.last_seen FROM modules m
+    `SELECT m.module_id, m.last_seen, d.tlm_interval_ms FROM modules m
        JOIN devices d ON d.device_id = m.device_id
       WHERE d.node_id = $1 AND lower(m.i2c_address) = lower($2)`,
     [nodeIdOf(deviceId), moduleId], 'board');
@@ -306,7 +308,7 @@ export const removeModule = async (client, { deviceId, moduleId }) => {
 
 export const removePort = async (client, { deviceId, moduleId, portId }) => {
   const row = await assertStale(client,
-    `SELECT p.port_id, p.last_seen FROM ports p
+    `SELECT p.port_id, p.last_seen, d.tlm_interval_ms FROM ports p
        JOIN modules m ON m.module_id = p.module_id
        JOIN devices d ON d.device_id = m.device_id
       WHERE d.node_id = $1 AND lower(m.i2c_address) = lower($2) AND p.port_code = $3`,
@@ -394,7 +396,7 @@ export async function queueCommand(client, { deviceId, action, params = {} }) {
 // t, v, tid, nid, cid, ts — is dropped, so the envelope's identity and
 // addressing always come from the server. buildCommand spreads params over its
 // context, so passing the raw body would let a caller overwrite them.
-const COMMAND_FIELDS = ['port', 'mode', 'state', 'duty', 'dur', 'busId', 'chip', 'ch'];
+const COMMAND_FIELDS = ['port', 'mode', 'state', 'duty', 'dur', 'busId', 'chip', 'ch', 'ms'];
 const pickParams = (body) =>
   Object.fromEntries(COMMAND_FIELDS.filter((k) => body[k] != null).map((k) => [k, body[k]]));
 

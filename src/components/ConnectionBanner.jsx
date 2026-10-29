@@ -56,6 +56,8 @@ const LOOKS = {
 
 // Telemetry older than this with a healthy server means the HARDWARE is quiet,
 // which is a different problem from a broken link and gets a different message.
+// The cloud health check sends staleAfterMs (3 × the slowest node's interval);
+// this is the fallback when it doesn't.
 const STALE_MS = 120_000;
 
 export default function ConnectionBanner() {
@@ -66,7 +68,8 @@ export default function ConnectionBanner() {
   let key = null;
   if (conn.state === 'unreachable') key = 'unreachable';
   else if (conn.route === 'ROUTE_LOCAL_FAILOVER') key = 'failover';
-  else if (conn.newestTelemetryAgeMs != null && conn.newestTelemetryAgeMs > STALE_MS) key = 'stale';
+  else if (conn.newestTelemetryAgeMs != null &&
+           conn.newestTelemetryAgeMs > (conn.staleAfterMs ?? STALE_MS)) key = 'stale';
 
   // Normal operation gets a small chip, not a banner. A bar that is always
   // present is a bar nobody reads, which costs you the two states that matter.

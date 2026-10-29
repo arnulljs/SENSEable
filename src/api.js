@@ -78,6 +78,7 @@ export function reportHealth(health) {
     tier: health?.tier ?? (isReadOnlyTier ? 'cloud' : 'edge'),
     route: health?.mqtt?.route ?? null,
     newestTelemetryAgeMs: health?.newestTelemetryAgeMs ?? null,
+    staleAfterMs: health?.staleAfterMs ?? null,
   });
 }
 
@@ -294,3 +295,7 @@ const sendCommand = (deviceId, action, params = {}) =>
 // "OUT3"). mode 'bin' -> pass state 0|1; mode 'pwm' -> pass duty 0..255.
 export const actuate = (deviceId, { actuatorId, port, mode, state, duty, dur = 0 }) =>
   sendCommand(deviceId, 'actuate', { actuatorId, port, mode, state, duty, dur });
+
+// Telemetry interval, 5 s – 1 h. The node ACKs, then republishes disco; the
+// dashboard shows device.tlmIntervalMs (from disco), never the value sent.
+export const setTlmInterval = (deviceId, ms) => sendCommand(deviceId, 'set_interval', { ms });

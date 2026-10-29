@@ -33,11 +33,19 @@ const HISTORY_CAP = Number(process.env.HISTORY_CAP ?? 40);
 // A node that really drops still shows Offline promptly: the broker publishes its
 // LWT (~1.5x keepalive after the socket dies) and lwt_online === false forces
 // Offline below, whatever this window says.
-const STALE_MS = Number(process.env.STALE_MS ?? 30_000) + Number(process.env.CLOUD_REFRESH_LAG_MS ?? 60_000);
+//
+// PER NODE, like the edge's staleMsFor(): three missed rows at the interval the
+// node declared in disco (devices.tlm_interval_ms), never less than STALE_MS.
+// Firmware 2026-10-29 defaults to 60 s and goes up to 1 h, so one fixed window
+// showed every slower node Offline between rows.
+const BASE_STALE_MS = Number(process.env.STALE_MS ?? 30_000);
+const REFRESH_LAG_MS = Number(process.env.CLOUD_REFRESH_LAG_MS ?? 60_000);
+export const staleWindowMs = (intervalMs) =>
+  Math.max(BASE_STALE_MS, 3 * (Number(intervalMs) || 0)) + REFRESH_LAG_MS;
 
 // Mirrors store.js: "active" = reported within the staleness window. The UI uses
 // it to decide whether a remove button is offered, so both tiers must agree.
-const freshly = (ts, now) => ts != null && now - new Date(ts).getTime() <= STALE_MS;
+const freshly = (ts, now, ms) => ts != null && now - new Date(ts).getTime() <= ms;
 
 // Board-status rollup — must match deriveModuleStatus() in status.js exactly, or
 // the same board would show a different colour depending on which tier answered.
@@ -70,7 +78,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
   const { rows } = await client.query(`
     SELECT
       d.device_id, d.node_id, d.name AS device_name, d.status AS device_status,
-      d.comm_mode, d.uptime_s, d.rssi, d.free_heap, d.last_seen, d.lwt_online,
+      d.comm_mode, d.uptime_s, d.rssi, d.free_heap, d.last_seen, d.lwt_online, d.tlm_interval_ms,
       d.active_hw_mode, d.wifi_ssid, d.cell_apn, d.target_broker, d.last_config_sync,
       t.tenant_id, t.slug AS tenant_slug,
       m.module_id, m.i2c_address, m.name AS module_name,
@@ -119,6 +127,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
         _uuid: r.device_id,
         _lastSeenRaw: r.last_seen,
         _lwtOnline: r.lwt_online ?? null,
+        tlmIntervalMs: r.tlm_interval_ms ?? null,
       });
     }
     const dev = byDevice.get(id);
@@ -171,6 +180,7 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
   // Strip internals so the payload matches projectDevices() exactly.
   const now = Date.now();
   return [...byDevice.values()].map((d) => {
+    const win = staleWindowMs(d.tlmIntervalMs);
     const modules = d.modules.map((m) => {
       const ports = m.ports.map((p) => ({
         id: p.id, label: p.label, unit: p.unit,
@@ -183,17 +193,17 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
         // stopped reporting days ago.
         status: p.enabled === false
           ? 'Disabled'
-          : (freshly(p._lastSeenRaw, now) ? p.status : 'Offline'),
+          : (freshly(p._lastSeenRaw, now, win) ? p.status : 'Offline'),
         history: p.history,
         activeFlag: p.activeFlag, connState: p.connState ?? null, masked: !!p.masked,
         lastSeen: p.lastSeen ?? null,
-        active: freshly(p._lastSeenRaw, now),
+        active: freshly(p._lastSeenRaw, now, win),
         configured: p.configured ?? true,
         enabled: p.enabled !== false,
         disabledReason: p.disabledReason ?? null,
         formulaLabel: p._formulaLabel ?? null,
       }));
-      const modActive = freshly(m._lastSeenRaw, now) || ports.some((p) => p.active);
+      const modActive = freshly(m._lastSeenRaw, now, win) || ports.some((p) => p.active);
       const considered = ports.map((p) => p.status).filter((x) => x !== 'Disabled');
       let worst = 'Normal';
       for (const st of considered) {
@@ -221,12 +231,13 @@ export async function readDevices(client, { tenantSlug = null } = {}) {
       // days ago still drew a green dot on the deployed dashboard.
       // Mirror the edge's isDeviceActive(): a false LWT means the socket dropped,
       // so offline now, whatever staleness says.
-      status: (d._lwtOnline !== false && freshly(d._lastSeenRaw, now)) ? d.status : 'offline',
+      status: (d._lwtOnline !== false && freshly(d._lastSeenRaw, now, win)) ? d.status : 'offline',
       commMode: d.commMode,
       uptime: d.uptime, rssi: d.rssi, freeHeap: d.freeHeap,
       lastSeen: d.lastSeen ?? null,
       hwConfig: d.hwConfig,
-      active: d._lwtOnline !== false && (freshly(d._lastSeenRaw, now) || modules.some((m) => m.active)),
+      tlmIntervalMs: d.tlmIntervalMs,
+      active: d._lwtOnline !== false && (freshly(d._lastSeenRaw, now, win) || modules.some((m) => m.active)),
       configured: d.configured ?? true,
       modules,
       actuators: d.actuators ?? [],
