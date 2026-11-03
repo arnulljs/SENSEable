@@ -32,3 +32,6 @@ dist-ssr
 .vite/
 .vercel
 .env*
+
+# TC-3.2 results
+tc-3-2-out/

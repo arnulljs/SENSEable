@@ -261,8 +261,8 @@ async function attachHistory(client, byDevice, portUuids) {
   if (!portUuids.length) return;
 
   const { rows } = await client.query(`
-    SELECT port_id, ts, value, status, origin, code, n, win_ms, value_min, value_max FROM (
-      SELECT port_id, ts, value, status, origin, code, n, win_ms, value_min, value_max,
+    SELECT port_id, ts, value, status, origin, code, n, win_ms, value_min, value_max, received_at FROM (
+      SELECT port_id, ts, value, status, origin, code, n, win_ms, value_min, value_max, received_at,
              row_number() OVER (PARTITION BY port_id ORDER BY ts DESC) AS rn
       FROM readings
       WHERE port_id = ANY($1::uuid[])
@@ -281,6 +281,11 @@ async function attachHistory(client, byDevice, portUuids) {
       // historyStats(); null on rows from older firmware.
       code: r.code ?? null, n: r.n ?? null, winMs: r.win_ms ?? null,
       min: r.value_min ?? null, max: r.value_max ?? null,
+      // Exact times for the JSON export (latency analysis): `timestamp` above
+      // is display-only and drops the seconds. receivedAt = when the row
+      // reached the cloud database (API migration 026); null on older rows.
+      ts: new Date(r.ts).toISOString(),
+      receivedAt: r.received_at ? new Date(r.received_at).toISOString() : null,
     });
   }
   for (const d of byDevice.values())

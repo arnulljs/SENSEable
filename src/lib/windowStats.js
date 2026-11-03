@@ -5,21 +5,22 @@
 // dashboard shows.
 
 // Port status codes whose meaning a plain Warning/Fault badge would hide.
+// 1: the window mean sat at ≈0 V — nothing attached, or a sensor reading 0 V.
 // 2: some sample in the window hit the ADC limit — clipped, not broken.
 // 3: every read in the window failed.
-export const CODE_LABEL = { 2: 'Saturated during window', 3: 'Read failed' };
+export const CODE_LABEL = { 1: 'Reading ≈ 0 V — sensor attached?', 2: 'Saturated during window', 3: 'Read failed' };
 
 // The badge text for a port or history row: the code's meaning when it is what
 // drives the status, otherwise the status itself.
 export function statusLabel(status, code) {
-  if ((status === 'Warning' && code === 2) || (status === 'Fault' && code === 3)) return CODE_LABEL[code];
+  if ((status === 'Warning' && (code === 1 || code === 2)) || (status === 'Fault' && code === 3)) return CODE_LABEL[code];
   return status;
 }
 
 // A status set by the node's code must survive the browser's own recompute
 // from the value and safe range, which knows nothing about saturation or
 // failed reads.
-export const codeDrivesStatus = (code) => code === 2 || code === 3;
+export const codeDrivesStatus = (code) => code === 1 || code === 2 || code === 3;
 
 export const fmt = (v) => {
   const n = Number(v);
