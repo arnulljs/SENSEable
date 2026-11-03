@@ -375,9 +375,10 @@ export async function queueCommand(client, { deviceId, action, params = {} }) {
   const nid = nodeIdOf(deviceId);
   let topicTid = rows[0].wire_tid;
   if (!topicTid) {
-    const { rowCount: pinned } = await client.query(
-      'SELECT 1 FROM node_tenant_assignments WHERE node_id = $1', [nid]);
-    topicTid = pinned ? null : envelope.tid;
+    // node_is_pinned(): the app role may not read node_tenant_assignments
+    // itself (API migrations 027/028).
+    const { rows: [pin] } = await client.query('SELECT node_is_pinned($1) AS pinned', [nid]);
+    topicTid = pin.pinned ? null : envelope.tid;
   }
   let published = false;
   if (topicTid) {
