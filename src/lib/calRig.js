@@ -3,14 +3,18 @@
 //   → {"cid":"cal-…","channel":"A0","tenant_id":"aquatech-856f"}
 //   ← {"cid","tenant_id","rig_id","channel","samples_used","raw_adc","millivolts","status":"valid"}
 //   ← {"status":"error","message":"…"}       (the rig's error replies carry no cid)
-// raw_adc is an ADS1115 count at ±4.096 V, the same scale the field nodes report,
-// so a formula fitted here applies to their raw counts unchanged.
+// raw_adc is an ADS1115 count at ±6.144 V (0.1875 mV per count, single-shot), the
+// same scale the field nodes report, so a formula fitted here applies to their raw
+// counts unchanged. (Before the rig update it ran at ±4.096 V, 0.125 mV per count:
+// see senseable-api/scripts/rescale-legacy-rig-calibrations.js.)
 // Web Serial exists only in Chromium browsers (Chrome, Edge) on desktop, over HTTPS.
 export const serialSupported = typeof navigator !== 'undefined' && 'serial' in navigator;
 
 const BAUD = 115200;
 const BOOT_SETTLE_MS = 1500;   // opening the port resets the ESP8266 (DTR/RTS)
 const REPLY_TIMEOUT_MS = 4000; // 20 averaged samples take ~0.5 s
+// ADS1115 at ±6.144 V full scale: 6144 mV / 32768 counts. Must match the field nodes.
+export const RIG_MV_PER_COUNT = 0.1875;
 
 // Throws with a message fit to show the operator; returns the reading.
 export function validateReply(msg, { cid, tenantId, channel }) {
@@ -22,8 +26,9 @@ export function validateReply(msg, { cid, tenantId, channel }) {
   const raw = msg.raw_adc;
   if (!Number.isInteger(raw) || raw < -32768 || raw > 32767) throw new Error('Rig reported an impossible ADC count.');
   const mv = Number(msg.millivolts);
-  // 0.125 mV per count at ±4.096 V; anything else means a corrupted line.
-  if (!Number.isFinite(mv) || Math.abs(mv - raw * 0.125) > 1) throw new Error('Rig reply is inconsistent (raw_adc vs millivolts).');
+  // 0.1875 mV per count at ±6.144 V, the field nodes' scale. A reply at any other
+  // scale (e.g. a rig still on the old ±4.096 V firmware) or a corrupted line fails.
+  if (!Number.isFinite(mv) || Math.abs(mv - raw * RIG_MV_PER_COUNT) > 1) throw new Error('Rig reply is inconsistent (raw_adc vs millivolts).');
   return { rawAdc: raw, millivolts: mv, rigId: String(msg.rig_id ?? ''), samples: Number(msg.samples_used) || null };
 }
 
