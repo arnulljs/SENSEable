@@ -54,9 +54,12 @@ export function clampDuty(v) {
   return Math.min(255, Math.max(0, n));
 }
 
-// 8-bit duty → display percent (for the "≈X%" readout next to the slider).
+// 8-bit duty → display percent (for the "≈X%" readout next to the slider), as
+// the firmware drives it (2026-11-04): duty ÷ 256 of the PWM period, except 255,
+// which it special-cases to fully on. So 128 → 50, 127 → 49.6, 254 → 99.2, 255 → 100.
 export function dutyPct(raw) {
-  return Math.round((clampDuty(raw) / 255) * 100);
+  const d = clampDuty(raw);
+  return d === 255 ? 100 : Math.round((d / 256) * 1000) / 10;
 }
 
 // "OUT3" | "out3" | 3 → 3

@@ -119,6 +119,8 @@ try {
   is('tid/nid come from the database, not the body', [e.tid, e.nid], ['tenant-123', 'N001']);
   is('caller cannot forge the cid', e.cid === 'forged-cid', false);
   is('ts is unix seconds, like the edge', e.ts < 1e11, true);
+  is('t0 is the send time in unix ms (firmware echoes it in ACKs)',
+    Number.isInteger(e.t0) && Math.abs(Date.now() - e.t0) < 60_000, true);
   const stored = await withTenantScope('aquatech', (c) =>
     c.query('SELECT port, mode, payload FROM commands WHERE cid = $1', [e.cid]));
   is('commands.port column holds the output number', stored.rows[0].port, 3);
