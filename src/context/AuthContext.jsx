@@ -28,6 +28,13 @@ const AuthContext = createContext(null);
 // does not, so that is read here too.
 const initialUrl = typeof window === 'undefined' ? null : new URL(window.location.href);
 const initialSetup = initialUrl?.searchParams.get('set-password') || null;
+// Email templates link here with ?token_hash=…&type=recovery|invite (see the
+// Supabase template note in SetPasswordPage). The token is verified by THIS
+// page's JavaScript, so a mail scanner that pre-opens the link (which burned
+// Supabase's own one-click verify links: "Email link is invalid or has
+// expired" on the first real click) cannot use it up.
+const initialTokenHash = initialUrl?.searchParams.get('token_hash') || null;
+const initialOtpType = initialUrl?.searchParams.get('type') || null;
 const initialLinkError = (() => {
   const h = new URLSearchParams((initialUrl?.hash ?? '').replace(/^#/, ''));
   return h.get('error_description')?.replace(/\+/g, ' ') ?? null;
@@ -52,11 +59,24 @@ export function AuthProvider({ children }) {
   const [authLoading, setAuthLoading] = useState(true);
   const [sessionReady, setSessionReady] = useState(false);
   const [passwordSetup, setPasswordSetup] = useState(initialSetup);   // 'invite' | 'reset' | null
-  const linkError = initialLinkError;
+  const [linkError, setLinkError] = useState(initialLinkError);
 
   // Track the Supabase session (persisted, auto-refreshed).
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => { setSession(data.session ?? null); setSessionReady(true); });
+    (async () => {
+      if (initialTokenHash) {
+        const { error } = await supabase.auth.verifyOtp({
+          token_hash: initialTokenHash, type: initialOtpType === 'invite' ? 'invite' : 'recovery' });
+        if (error) setLinkError(error.message);
+        // Drop the one-time token from the address bar: a reload must not reuse it.
+        const u = new URL(window.location.href);
+        u.searchParams.delete('token_hash'); u.searchParams.delete('type');
+        window.history.replaceState(null, '', u.pathname + u.search);
+      }
+      const { data } = await supabase.auth.getSession();
+      setSession(data.session ?? null);
+      setSessionReady(true);
+    })();
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s ?? null);
       // A reset link opened without our query string still lands here.
