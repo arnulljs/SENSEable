@@ -10,7 +10,7 @@
 // work anyway.
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { Stage, Layer, Rect, Circle, Text, Group, Line } from 'react-konva';
-import { mapSensors as initialPlacements } from '../mockData';
+import { fetchMapSensors, saveMapSensors } from '../api';
 
 // Stable identity: a fresh [] on each render would change hook dependency
 // identity every pass, defeating the memoisation below.
@@ -224,15 +224,44 @@ export default function InteractiveMap({
   }
 
   // Placed sensors only store position + which channel they represent.
-  // Their label/unit/status are resolved live from `devices` below.
-  const [sensors, setSensors] = useState(() =>
-    initialPlacements.map(p => ({
-      id: p.id,
-      x: p.x,
-      y: p.y,
-      channelKey: channelKey(p.deviceId, p.moduleId, p.portId),
-    }))
-  );
+  // Their label/unit/status are resolved live from `devices` below. They load
+  // from the organization's saved placements (/api/map-sensors), not from mock
+  // data, so the map shows only real channels, the same for every member.
+  const [sensors, setSensors] = useState([]);
+  const savedRef = useRef(null);   // JSON of what the server holds; null until loaded
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchMapSensors()
+      .then((list) => {
+        if (cancelled || !Array.isArray(list)) return;
+        const placed = list.map((p) => ({
+          id: p.id, x: p.x, y: p.y, channelKey: channelKey(p.deviceId, p.moduleId, p.portId),
+        }));
+        savedRef.current = JSON.stringify(placed.map(({ x, y, channelKey: k }) => [k, x, y]));
+        setSensors(placed);
+      })
+      .catch(() => { /* offline: start empty; nothing is saved until a load succeeds */ });
+    return () => { cancelled = true; };
+  }, [tenantId]);
+
+  // Persist placements (add, move, delete, clear, load profile) shortly after
+  // they change. Only an editor saves, only after the initial load (so an empty
+  // map from a failed load never wipes the saved one), and only real changes.
+  useEffect(() => {
+    if (!canEdit || savedRef.current == null) return;
+    const body = JSON.stringify(sensors.map(({ x, y, channelKey: k }) => [k, x, y]));
+    if (body === savedRef.current) return;
+    const t = setTimeout(() => {
+      saveMapSensors(sensors.map((s) => {
+        const [deviceId, moduleId, portId] = s.channelKey.split('::');
+        return { deviceId, moduleId, portId, x: Math.round(s.x), y: Math.round(s.y) };
+      }))
+        .then(() => { savedRef.current = body; })
+        .catch((e) => flashStatus(`Couldn't save sensor positions: ${e.message}`, true));
+    }, 800);
+    return () => clearTimeout(t);
+  }, [sensors, canEdit]);
 
   // Drawn shapes
   const [shapes, setShapes]   = useState([]);

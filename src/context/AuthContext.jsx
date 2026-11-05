@@ -5,6 +5,7 @@
 //   currentOrg  {id, name, slug, orgCode, tid, maxUsers}
 //   role {id}, isDesigner, isOperator, orgUsers, authLoading
 //   login, logout, registerOrganization, joinOrganization, inviteOperator, removeMember
+//   passwordSetup, sessionReady, linkError, completePasswordSetup, requestPasswordReset
 //
 // FLOW
 //   sign up / log in  → Supabase Auth (email confirmation handled by Supabase).
@@ -19,6 +20,19 @@ import {
 import { supabase } from '../lib/supabase';
 
 const AuthContext = createContext(null);
+
+// Email links (operator invite, password reset) return here with
+// ?set-password=invite|reset, which the app answers with the set-password
+// screen. Read once at load: supabase-js consumes the #access_token hash itself,
+// but a failed link (expired, already used) leaves #error_description, which it
+// does not, so that is read here too.
+const initialUrl = typeof window === 'undefined' ? null : new URL(window.location.href);
+const initialSetup = initialUrl?.searchParams.get('set-password') || null;
+const initialLinkError = (() => {
+  const h = new URLSearchParams((initialUrl?.hash ?? '').replace(/^#/, ''));
+  return h.get('error_description')?.replace(/\+/g, ' ') ?? null;
+})();
+const redirectFor = (kind) => `${window.location.origin}/?set-password=${kind}`;
 
 async function api(action, token, body) {
   const res = await fetch(`/api/orgs/${action}`, {
@@ -36,11 +50,18 @@ export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [membership, setMembership] = useState(null); // tenant_for_auth row, or null
   const [authLoading, setAuthLoading] = useState(true);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [passwordSetup, setPasswordSetup] = useState(initialSetup);   // 'invite' | 'reset' | null
+  const linkError = initialLinkError;
 
   // Track the Supabase session (persisted, auto-refreshed).
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s ?? null));
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session ?? null); setSessionReady(true); });
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      setSession(s ?? null);
+      // A reset link opened without our query string still lands here.
+      if (event === 'PASSWORD_RECOVERY') setPasswordSetup((k) => k ?? 'reset');
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -86,6 +107,12 @@ export function AuthProvider({ children }) {
       .then((r) => { if (!cancelled) setOrgInfo(r.ok ? r.data : null); })
       .catch(() => { if (!cancelled) setOrgInfo(null); });
     return () => { cancelled = true; };
+  }, [membership, accessToken]);
+  // After an invite or removal, re-read the roster.
+  const refreshOrg = useCallback(async () => {
+    if (!membership || !accessToken) return;
+    const r = await api('me', accessToken).catch(() => null);
+    if (r?.ok) setOrgInfo(r.data);
   }, [membership, accessToken]);
 
   const currentOrg = useMemo(() => {
@@ -229,17 +256,49 @@ export function AuthProvider({ children }) {
     })();
   }, [session, membership, authLoading, resolveMembership]);
 
-  // Invites / member management need the authorized users-read pass; kept as
-  // clear not-yet-available responses so the Team UI degrades gracefully.
-  const inviteOperator = useCallback(async () =>
-    ({ ok: false, error: 'Inviting members is not available yet in this build.' }), []);
-  const removeMember = useCallback(async () =>
-    ({ ok: false, error: 'Removing members is not available yet in this build.' }), []);
+  // Designer member management (api/orgs/invite, /remove). The invited person
+  // gets an email from Supabase whose link opens the set-password screen.
+  const inviteOperator = useCallback(async ({ fullName, email }) => {
+    if (!fullName?.trim() || !email?.trim()) return { ok: false, error: 'Enter a full name and an email.' };
+    const r = await api('invite', accessToken, { fullName, email }).catch(() => null);
+    if (!r) return { ok: false, error: 'Could not reach the server. Try again.' };
+    if (!r.ok) return { ok: false, error: r.data.error ?? 'Could not add the operator.' };
+    await refreshOrg();
+    return { ok: true, member: r.data.member };
+  }, [accessToken, refreshOrg]);
+  const removeMember = useCallback(async (userId) => {
+    const r = await api('remove', accessToken, { userId }).catch(() => null);
+    if (!r) return { ok: false, error: 'Could not reach the server. Try again.' };
+    if (!r.ok) return { ok: false, error: r.data.error ?? 'Could not remove the member.' };
+    await refreshOrg();
+    return { ok: true };
+  }, [accessToken, refreshOrg]);
+
+  // Set the password from an invite or reset link (the link already signed the
+  // person in). Clears the query string so a reload doesn't ask again.
+  const completePasswordSetup = useCallback(async (password) => {
+    if (!password || password.length < 6) return { ok: false, error: 'Password must be at least 6 characters.' };
+    const { error } = await supabase.auth.updateUser({ password });
+    if (error) return { ok: false, error: error.message };
+    window.history.replaceState(null, '', window.location.pathname);
+    setPasswordSetup(null);
+    return { ok: true };
+  }, []);
+
+  // "Forgot password": always reports success, so the form can't be used to
+  // find out which emails have accounts.
+  const requestPasswordReset = useCallback(async (email) => {
+    if (!email?.trim()) return { ok: false, error: 'Enter your email.' };
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: redirectFor('reset') });
+    if (error && /rate|limit|seconds/i.test(error.message)) return { ok: false, error: error.message };
+    return { ok: true };
+  }, []);
 
   const value = {
     currentUser, currentOrg, role, isDesigner, isOperator,
-    orgUsers, authLoading,
+    orgUsers, authLoading, sessionReady, session,
     login, logout, registerOrganization, joinOrganization, inviteOperator, removeMember,
+    passwordSetup, linkError, completePasswordSetup, requestPasswordReset,
   };
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

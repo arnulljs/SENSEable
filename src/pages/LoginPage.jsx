@@ -16,7 +16,9 @@ const DEMO_ACCOUNTS = [
 ];
 
 export default function LoginPage({ onSwitchToSignup }) {
-  const { login, authLoading } = useAuth();
+  const { login, authLoading, requestPasswordReset } = useAuth();
+  const [resetMode, setResetMode] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw]     = useState(false);
@@ -28,6 +30,48 @@ export default function LoginPage({ onSwitchToSignup }) {
     setError(null);
     const res = await login(email, password);
     if (!res.ok) setError(res.error);
+  }
+
+  async function handleReset(e) {
+    e.preventDefault();
+    setError(null);
+    const res = await requestPasswordReset(email);
+    if (!res.ok) { setError(res.error); return; }
+    setResetSent(true);
+  }
+
+  if (resetMode) {
+    return (
+      <div className="auth-shell">
+        <AuthBrandPanel />
+        <div className="auth-form-panel">
+          <div className="auth-form-card">
+            <h1 className="auth-title">Reset your password</h1>
+            <p className="auth-subtitle">Enter your account&rsquo;s email and we&rsquo;ll send you a link to choose a new password.</p>
+            {error && <div className="auth-error">{error}</div>}
+            {resetSent ? (
+              <div className="auth-success">
+                If an account exists for <strong>{email}</strong>, a reset link is on its way. Check your inbox
+                (and spam). The link works once and expires after an hour.
+              </div>
+            ) : (
+              <form onSubmit={handleReset}>
+                <label className="auth-label" htmlFor="reset-email">Email</label>
+                <input id="reset-email" className="input-field" type="email" autoComplete="email"
+                  placeholder="you@organization.ph" value={email} onChange={e => setEmail(e.target.value)} required />
+                <button className="btn-primary auth-submit-btn" type="submit">Send reset link</button>
+              </form>
+            )}
+            <div className="auth-switch">
+              <button type="button" className="auth-switch-link"
+                onClick={() => { setResetMode(false); setResetSent(false); setError(null); }}>
+                Back to sign in
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   function fillDemo(acc) {
@@ -73,6 +117,10 @@ export default function LoginPage({ onSwitchToSignup }) {
               {authLoading ? 'Signing in\u2026' : 'Sign in'}
             </button>
           </form>
+
+          <button type="button" className="auth-link-btn" onClick={() => { setResetMode(true); setError(null); }}>
+            Forgot password?
+          </button>
 
           <button type="button" className="auth-link-btn" onClick={() => setShowDemo(s => !s)}>
             {showDemo ? 'Hide demo accounts' : 'Try a demo account'}

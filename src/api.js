@@ -226,6 +226,10 @@ const send = (method, path, body) => request(method, path, body);
 export const fetchDevices = () => get('/devices');
 export const fetchNotifications = () => get('/notifications');
 export const fetchFormulas = () => get('/formulas');
+// Sensor placements on the interactive map, shared by the whole organization.
+// PUT replaces the tenant's whole set: [{ deviceId, moduleId, portId, x, y }].
+export const fetchMapSensors = () => get('/map-sensors');
+export const saveMapSensors = (list) => send('PUT', '/map-sensors', list);
 
 // ── Writes (edge tier only — 405 on cloud) ──────────────────────────────────
 

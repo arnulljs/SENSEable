@@ -11,6 +11,7 @@ import Actuators from './pages/Actuators';
 import Team from './pages/Team';
 import LoginPage from './pages/LoginPage';
 import CreateAccountPage from './pages/CreateAccountPage';
+import SetPasswordPage from './pages/SetPasswordPage';
 import { useAuth } from './context/AuthContext';
 import { connectRealtime } from './realtime';
 import {
@@ -171,7 +172,7 @@ function AuthGate() {
 }
 
 export default function App() {
-  const { currentUser, currentOrg, isDesigner } = useAuth();
+  const { currentUser, currentOrg, isDesigner, passwordSetup } = useAuth();
 
   // Top-level navigation
   const [currentPage, setCurrentPage] = useState('home'); // 'home' | 'notifications' | 'calibration' | 'control' | 'team'
@@ -627,6 +628,10 @@ export default function App() {
 
   // Not signed in → the whole app is just the auth screens. Everything
   // below this point can safely assume `currentUser`/`currentOrg` exist.
+  // An invite or password-reset link: choose a password before anything else.
+  if (passwordSetup) {
+    return <SetPasswordPage />;
+  }
   if (!currentUser) {
     return <AuthGate />;
   }

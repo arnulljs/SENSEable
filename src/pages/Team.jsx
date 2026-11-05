@@ -32,20 +32,26 @@ export default function Team() {
   const [fullName, setFullName]     = useState('');
   const [email, setEmail]           = useState('');
   const [error, setError]           = useState(null);
-  const [created, setCreated]       = useState(null); // { user, tempPassword }
+  const [created, setCreated]       = useState(null); // the invited member
+  const [busy, setBusy]             = useState(false);
+  const [listError, setListError]   = useState(null);
 
-  function handleInvite(e) {
+  async function handleInvite(e) {
     e.preventDefault();
     setError(null);
-    const res = inviteOperator({ fullName, email });
+    setBusy(true);
+    const res = await inviteOperator({ fullName, email });
+    setBusy(false);
     if (!res.ok) { setError(res.error); return; }
-    setCreated(res);
+    setCreated(res.member);
     setFullName(''); setEmail('');
   }
 
-  function handleRemove(userId, name) {
-    if (!window.confirm(`Remove ${name} from ${currentOrg.name}? They will lose access immediately.`)) return;
-    removeMember(userId);
+  async function handleRemove(userId, name) {
+    if (!window.confirm(`Remove ${name} from ${currentOrg.name}? Their account is deleted and they lose access immediately.`)) return;
+    setListError(null);
+    const res = await removeMember(userId);
+    if (!res.ok) setListError(res.error);
   }
 
   const seatsUsed = orgUsers.length;
@@ -97,8 +103,8 @@ export default function Team() {
                   <input id="invite-email" className="input-field" type="email" value={email}
                     onChange={e => setEmail(e.target.value)} required />
                 </div>
-                <button className="cal-primary-btn" type="submit" style={{ marginBottom: 0, width: 'auto', padding: '8px 16px', whiteSpace: 'nowrap' }}>
-                  Create Operator Account
+                <button className="cal-primary-btn" type="submit" disabled={busy} style={{ marginBottom: 0, width: 'auto', padding: '8px 16px', whiteSpace: 'nowrap' }}>
+                  {busy ? 'Sending invite\u2026' : 'Send Invite'}
                 </button>
               </div>
             </form>
@@ -106,9 +112,9 @@ export default function Team() {
 
           {created && (
             <div className="auth-success" style={{ marginTop: 14 }}>
-              <strong>{created.user.fullName}</strong> can sign in with <code>{created.user.email}</code> and the
-              temporary password <code>{created.tempPassword}</code>. Share this with them directly — there&rsquo;s
-              no email delivery in this prototype, so this is the only time it&rsquo;s shown.
+              Invitation sent to <code>{created.email}</code>. <strong>{created.fullName}</strong> clicks the link in
+              the email, chooses a password, and is signed in as an Operator. They show as &ldquo;Invited&rdquo; until
+              then. The link expires after 24 hours; if it does, remove them and add them again.
             </div>
           )}
         </div>
@@ -119,6 +125,7 @@ export default function Team() {
             <span className="manage-title">Members</span>
             <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>{orgUsers.length} total</span>
           </div>
+          {listError && <div className="auth-error" style={{ marginBottom: 10 }}>{listError}</div>}
 
           <div className="team-table">
             <div className="team-row team-row-head">
@@ -134,6 +141,7 @@ export default function Team() {
                 <span className="team-email-cell">{u.email}</span>
                 <span>
                   <span className={`role-badge ${u.roleId}`}>{u.roleId === 'designer' ? 'Designer' : 'Operator'}</span>
+                  {u.status === 'invited' && <span className="team-you-tag" title="Hasn't accepted the invitation yet">Invited</span>}
                 </span>
                 <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{formatDate(u.createdAt)}</span>
                 <span>

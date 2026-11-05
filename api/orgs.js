@@ -161,12 +161,20 @@ async function tidCheck(req, res, pool) {
 async function me(req, res, pool, user) {
   const m = await existingMembership(pool, user.id);
   if (!m) return res.status(404).json({ error: 'not a member of any organization' });
+  // An invited operator is 'invited' until they first sign in. Reaching here
+  // means they did: the token is valid and its email confirmed (callerFromToken),
+  // which the invite link does. From now on the API's caller check lets them in.
+  if (m.status === 'invited') {
+    await inTenant(pool, m.tenant_id, (c) =>
+      c.query("UPDATE users SET status = 'active' WHERE auth_id = $1 AND status = 'invited'", [user.id]));
+    m.status = 'active';
+  }
   const { org, members } = await inTenant(pool, m.tenant_id, async (c) => ({
     org: (await c.query(
       'SELECT name, slug, org_code, mqtt_tid, max_users FROM tenants WHERE tenant_id = $1', [m.tenant_id])).rows[0],
     members: (await c.query(
-      `SELECT user_id, auth_id, full_name, email, role_id, created_at FROM users
-        WHERE tenant_id = $1 AND status = 'active' ORDER BY created_at`, [m.tenant_id])).rows,
+      `SELECT user_id, auth_id, full_name, email, role_id, status, created_at FROM users
+        WHERE tenant_id = $1 AND status IN ('active', 'invited') ORDER BY created_at`, [m.tenant_id])).rows,
   }));
   if (!org) return res.status(404).json({ error: 'organization not found' });
   return res.status(200).json({
@@ -178,9 +186,99 @@ async function me(req, res, pool, user) {
     // id = the Supabase auth id where there is one, so the page can mark "You".
     members: members.map((u) => ({
       id: u.auth_id ?? u.user_id, fullName: u.full_name, email: u.email,
-      roleId: u.role_id, createdAt: u.created_at,
+      roleId: u.role_id, status: u.status, createdAt: u.created_at,
     })),
   });
+}
+
+// ── Designer: add an operator ───────────────────────────────────────────────
+// Supabase sends the invite email (through the project's SMTP). Its link signs
+// the person in with their email confirmed and lands on the app's set-password
+// screen (?set-password=invite). The users row is created now, as 'invited',
+// so the roster shows them and the seat is held; me() activates it on their
+// first sign-in.
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+async function designerOf(pool, user, res) {
+  const m = await existingMembership(pool, user.id);
+  if (!m || m.role_id !== 'designer' || m.status !== 'active') {
+    res.status(403).json({ error: 'Only an organization Designer can manage members.' });
+    return null;
+  }
+  return m;
+}
+
+// Where the invite / reset link returns to. The browser's Origin, else APP_URL.
+// Supabase only redirects to URLs on its allow list (Auth → URL Configuration),
+// so a forged Origin cannot send the link anywhere else.
+const appOrigin = (req) => req.headers?.origin || process.env.APP_URL || 'https://senseable-iot.vercel.app';
+
+async function invite(req, res, pool, user) {
+  const m = await designerOf(pool, user, res);
+  if (!m) return;
+  const fullName = String(req.body?.fullName ?? '').trim().slice(0, 100);
+  const email = String(req.body?.email ?? '').trim().toLowerCase();
+  if (!fullName) return res.status(400).json({ error: 'Enter the operator\'s full name.' });
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Enter a valid email address.' });
+
+  // Seat check BEFORE any email goes out.
+  // ponytail: two designers inviting at the same instant could pass this
+  // together and overfill by one; a seat trigger fixes that if it ever matters.
+  const seats = await inTenant(pool, m.tenant_id, async (c) => {
+    const t = await c.query('SELECT max_users FROM tenants WHERE tenant_id = $1', [m.tenant_id]);
+    const n = await c.query("SELECT count(*)::int AS n FROM users WHERE tenant_id = $1 AND status IN ('active','invited')", [m.tenant_id]);
+    return { max: t.rows[0]?.max_users ?? 0, used: n.rows[0].n };
+  });
+  if (seats.max && seats.used >= seats.max) {
+    return res.status(403).json({ error: `All ${seats.max} seats are used. Remove a member first.` });
+  }
+
+  const { data, error } = await admin().auth.admin.inviteUserByEmail(email, {
+    data: { full_name: fullName },
+    redirectTo: `${appOrigin(req)}/?set-password=invite`,
+  });
+  if (error) {
+    const taken = /already|registered|exists/i.test(error.message);
+    return res.status(taken ? 409 : 502).json({ error: taken
+      ? 'An account with this email already exists. Ask them to sign in, or to use "Forgot password".'
+      : `Could not send the invitation email: ${error.message}` });
+  }
+
+  try {
+    await inTenant(pool, m.tenant_id, (c) => c.query(
+      `INSERT INTO users (tenant_id, role_id, full_name, email, auth_id, status)
+       VALUES ($1, 'operator', $2, $3, $4, 'invited')`,
+      [m.tenant_id, fullName, email, data.user.id]));
+  } catch (e) {
+    // No membership, no account: undo the auth user so the email is free again.
+    await admin().auth.admin.deleteUser(data.user.id).catch(() => {});
+    if (e.code === '23505') return res.status(409).json({ error: 'This email already belongs to an organization.' });
+    throw e;
+  }
+  return res.status(201).json({ ok: true,
+    member: { id: data.user.id, fullName, email, roleId: 'operator', status: 'invited' } });
+}
+
+// ── Designer: remove a member ───────────────────────────────────────────────
+// Deletes the membership AND the Supabase account, so the person can no longer
+// sign in and their email can be invited again. Designers can't be removed
+// here, and nobody can remove themselves.
+async function remove(req, res, pool, user) {
+  const m = await designerOf(pool, user, res);
+  if (!m) return;
+  const id = String(req.body?.userId ?? '');
+  if (!id) return res.status(400).json({ error: 'userId is required' });
+  if (id === user.id) return res.status(400).json({ error: 'You cannot remove yourself.' });
+  const { rows } = await inTenant(pool, m.tenant_id, (c) => c.query(
+    `DELETE FROM users
+      WHERE tenant_id = $1 AND role_id <> 'designer'
+        AND (auth_id::text = $2 OR user_id::text = $2)
+      RETURNING auth_id, full_name`, [m.tenant_id, id]));
+  if (!rows.length) return res.status(404).json({ error: 'No such operator in this organization.' });
+  if (rows[0].auth_id) {
+    const { error } = await admin().auth.admin.deleteUser(rows[0].auth_id);
+    if (error) console.error('[orgs] removed member but could not delete their account:', error.message);
+  }
+  return res.status(200).json({ ok: true, removed: rows[0].full_name });
 }
 
 async function join(req, res, pool, user) {
@@ -266,7 +364,9 @@ export default async function handler(req, res) {
     if (action === 'register') return await register(req, res, pool, user);
     if (action === 'join')     return await join(req, res, pool, user);
     if (action === 'me')       return await me(req, res, pool, user);
-    return res.status(404).json({ error: 'unknown action; use /api/orgs/register, /join, /me or /tid-check' });
+    if (action === 'invite')   return await invite(req, res, pool, user);
+    if (action === 'remove')   return await remove(req, res, pool, user);
+    return res.status(404).json({ error: 'unknown action; use /api/orgs/register, /join, /me, /invite, /remove or /tid-check' });
   } catch (e) {
     console.error('[orgs]', e);
     return res.status(500).json({ error: e.message });
