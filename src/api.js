@@ -303,3 +303,7 @@ export const actuate = (deviceId, { actuatorId, port, mode, state, duty, dur = 0
 // Telemetry interval, 5 s – 1 h. The node ACKs, then republishes disco; the
 // dashboard shows device.tlmIntervalMs (from disco), never the value sent.
 export const setTlmInterval = (deviceId, ms) => sendCommand(deviceId, 'set_interval', { ms });
+
+// One port's stored readings since an ISO time (oldest first), for export.
+export const fetchReadings = ({ deviceId, moduleId, portId, since }) =>
+  get(`/readings?${new URLSearchParams({ device: deviceId, module: moduleId, port: portId, since })}`);

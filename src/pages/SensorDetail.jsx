@@ -3,6 +3,18 @@ import { useState } from 'react';
 import GaugeCard from '../components/GaugeCard';
 import { statusLabel, windowLine, fmt } from '../lib/windowStats';
 import { sensorProfiles as defaultProfiles } from '../mockData';
+import { fetchReadings } from '../api';
+
+// "Export data" ranges. `null` = the rows on screen (no server call).
+const EXPORT_RANGES = [
+  ['shown', 'Rows shown', null],
+  ['30m', 'Last 30 minutes', 30 * 60e3],
+  ['1h', 'Last hour', 3600e3],
+  ['6h', 'Last 6 hours', 6 * 3600e3],
+  ['24h', 'Last 24 hours', 24 * 3600e3],
+  ['7d', 'Last 7 days', 7 * 24 * 3600e3],
+  ['30d', 'Last 30 days', 30 * 24 * 3600e3],
+];
 
 // Saved sensor profiles persist in localStorage (same pattern as the
 // Interactive Map's named save profiles) so they survive page navigation
@@ -287,6 +299,9 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
   const recovered = history.filter((h) => h.source === 'local').length;
 
   const [showEditModal, setShowEditModal] = useState(false);
+  const [exportRange, setExportRange] = useState('24h');
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(null);
   const [profiles, setProfiles] = useState(() => loadProfiles());
 
   function handleSaveProfile(profile) {
@@ -310,15 +325,32 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
     setShowEditModal(false);
   }
 
-  function handleExport() {
-    const json = JSON.stringify(history, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
+  function download(data, suffix) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${label.replace(/\s+/g, '_')}_history.json`;
+    a.download = `${label.replace(/\s+/g, '_')}_${suffix}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // The rows on screen are only the latest few; a range asks the server for
+  // every stored reading of this port in that window.
+  async function handleExport() {
+    const [key, , ms] = EXPORT_RANGES.find(([k]) => k === exportRange);
+    if (ms == null) { download(history, 'history'); return; }
+    setExporting(true); setExportError(null);
+    try {
+      const since = new Date(Date.now() - ms).toISOString();
+      const data = await fetchReadings({ deviceId: device.id, moduleId: module.id, portId: port.id, since });
+      download({ sensor: label, unit: port.unit ?? null, ...data }, key);
+      if (data.truncated) setExportError(`Only the first ${data.count.toLocaleString()} readings were exported; choose a shorter range for the rest.`);
+    } catch (e) {
+      setExportError(`Export failed: ${e.message}`);
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -408,10 +440,17 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
               </span>
             )}
           </span>
-          <button className="export-btn" onClick={handleExport}>
-            ↓ Export JSON
-          </button>
+          <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <select className="export-btn" value={exportRange} disabled={exporting}
+              aria-label="Export range" onChange={(e) => setExportRange(e.target.value)}>
+              {EXPORT_RANGES.map(([k, text]) => <option key={k} value={k}>{text}</option>)}
+            </select>
+            <button className="export-btn" onClick={handleExport} disabled={exporting}>
+              {exporting ? 'Exporting\u2026' : '\u2193 Export JSON'}
+            </button>
+          </span>
         </div>
+        {exportError && <div className="auth-error" style={{ margin: '0 0 10px' }}>{exportError}</div>}
         <table className="data-table">
           <thead>
             <tr>

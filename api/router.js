@@ -13,7 +13,7 @@
 
 import { readHandler } from './_db.js';
 import {
-  readDevices, readNotifications, readMapSensors, readFormulas,
+  readDevices, readNotifications, readMapSensors, readFormulas, readReadings,
   readSensorProfiles, readCommands,
 } from './_read.js';
 import {
@@ -31,6 +31,8 @@ const READS = {
                             readCommands(c, { tenantSlug, deviceId: req.query?.device ?? null }), 2],
   'notifications':       [readNotifications,      5],
   'map-sensors':         [readMapSensors,        10],
+  // One port's readings over a time range, for "Export data" on the sensor page.
+  'readings':            [(c, { tenantSlug, req }) => readReadings(c, { tenantSlug, ...req.query }), 0],
   'formulas':            [readFormulas,          30],
   'sensor-profiles':     [readSensorProfiles,    30],
 };
