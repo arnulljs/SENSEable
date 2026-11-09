@@ -602,6 +602,7 @@ input, select, textarea { font-family: inherit; }
 }
 .auth-brand-logo {
   width: 150px; height: auto;
+  margin: 0 auto;
   display: block;
 }
 .auth-brand-tagline {
