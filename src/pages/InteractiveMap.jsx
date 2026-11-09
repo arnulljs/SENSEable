@@ -80,6 +80,12 @@ const IconLine = () => (
     <line x1="2" y1="13" x2="14" y2="3"/>
   </svg>
 );
+const IconText = () => (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"
+       strokeLinecap="round" width="16" height="16">
+    <path d="M3 3h10M8 3v10"/>
+  </svg>
+);
 const IconTrash = () => (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"
        strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
@@ -273,8 +279,9 @@ export default function InteractiveMap({
   // Unified selection (sensors + shapes share same id space)
   const [selectedId, setSelectedId] = useState(null);
 
-  // Tools: 'select' | 'draw' | 'rect' | 'circle' | 'line' | 'eraser'
+  // Tools: 'select' | 'draw' | 'rect' | 'circle' | 'line' | 'text' | 'eraser'
   const [activeTool, setActiveTool]   = useState('select');
+  const [textDraft, setTextDraft]     = useState('Label');   // what the Text tool places
   const [pendingChannelKey, setPendingChannelKey] = useState(null);  // for 'draw' sensor placement
   const [shapeColor, setShapeColor]   = useState(SHAPE_COLORS[1]);
 
@@ -377,6 +384,8 @@ export default function InteractiveMap({
   useEffect(() => {
     function onKey(e) {
       if (!canEdit) return; // Operators: nothing on this canvas is deletable
+      // Typing in a sidebar field (e.g. a text label): Backspace edits the field.
+      if (e.target.closest?.('input, textarea, select')) return;
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
         setSensors(prev => prev.filter(s => s.id !== selectedId));
         setShapes  (prev => prev.filter(s => s.id !== selectedId));
@@ -531,6 +540,19 @@ export default function InteractiveMap({
       return;
     }
 
+    // Text placement — on the background or on top of shapes, like sensors.
+    if (activeTool === 'text') {
+      const pos = e.target.getStage().getPointerPosition();
+      const id = `shape_${Date.now()}`;
+      setShapes(prev => [...prev, {
+        id, type: 'text', x: pos.x, y: pos.y,
+        text: textDraft.trim() || 'Text', fontSize: 16, color: shapeColor,
+      }]);
+      switchTool('select');
+      setSelectedId(id);   // selected, so its words and size can be edited at once
+      return;
+    }
+
     // Sensor placement — allowed on background AND on top of shapes/lines
     if (activeTool === 'draw' && pendingChannelKey) {
       // Guard: the channel must still exist and not already be placed
@@ -556,6 +578,8 @@ export default function InteractiveMap({
   // ── Helpers ───────────────────────────────────────────────────────────────
   const isShapeTool  = canEdit && ['rect', 'circle', 'line'].includes(activeTool);
   const hasSelection = !!selectedId;
+  const selectedText = shapes.find(s => s.id === selectedId && s.type === 'text') ?? null;
+  const updateShape  = (id, patch) => setShapes(prev => prev.map(s => (s.id === id ? { ...s, ...patch } : s)));
 
   // Wipe everything from the canvas
   function clearAll() {
@@ -698,7 +722,7 @@ export default function InteractiveMap({
 
         {canEdit ? (
           <>
-            {/* Tools (2-column grid so all 6 fit) */}
+            {/* Tools (2-column grid so all 7 fit) */}
             <div className="map-sidebar-section">
               <div className="map-sidebar-section-title">Tools</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
@@ -708,6 +732,7 @@ export default function InteractiveMap({
                   { key: 'rect',   label: 'Rect',    Icon: IconRect    },
                   { key: 'circle', label: 'Circle',  Icon: IconCircle  },
                   { key: 'line',   label: 'Line',    Icon: IconLine    },
+                  { key: 'text',   label: 'Text',    Icon: IconText    },
                   { key: 'eraser', label: 'Erase',   Icon: IconErase   },
                 ].map(({ key, label, Icon }) => (
                   <button key={key}
@@ -726,7 +751,7 @@ export default function InteractiveMap({
               )}
 
               {/* Shape color picker */}
-              {isShapeTool && (
+              {(isShapeTool || activeTool === 'text') && (
                 <div style={{ marginTop: 10 }}>
                   <div className="map-sidebar-section-title" style={{ marginBottom: 6 }}>Color</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -741,10 +766,17 @@ export default function InteractiveMap({
                     ))}
                   </div>
                   <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 7, lineHeight: 1.4 }}>
-                    {activeTool === 'line'
-                      ? 'Click & drag on the canvas to draw a line.'
-                      : `Click & drag on the canvas to draw a ${activeTool}.`}
+                    {activeTool === 'text'
+                      ? 'Type the text, then click the canvas to place it.'
+                      : activeTool === 'line'
+                        ? 'Click & drag on the canvas to draw a line.'
+                        : `Click & drag on the canvas to draw a ${activeTool}.`}
                   </p>
+                  {activeTool === 'text' && (
+                    <input className="input-field" value={textDraft} maxLength={80}
+                      onChange={e => setTextDraft(e.target.value)} placeholder="e.g. Tank 1"
+                      style={{ marginTop: 4, width: '100%' }} />
+                  )}
                 </div>
               )}
 
@@ -761,6 +793,24 @@ export default function InteractiveMap({
                 </p>
               )}
             </div>
+
+            {/* Edit a selected text label */}
+            {selectedText && activeTool === 'select' && (
+              <div className="map-sidebar-section">
+                <div className="map-sidebar-section-title">Text</div>
+                <input className="input-field" value={selectedText.text} maxLength={80}
+                  onChange={e => updateShape(selectedText.id, { text: e.target.value })}
+                  style={{ width: '100%', marginBottom: 6 }} />
+                <select className="input-field" value={selectedText.fontSize}
+                  onChange={e => updateShape(selectedText.id, { fontSize: Number(e.target.value) })}
+                  style={{ width: '100%' }}>
+                  <option value={12}>Small</option>
+                  <option value={16}>Medium</option>
+                  <option value={24}>Large</option>
+                  <option value={36}>Extra large</option>
+                </select>
+              </div>
+            )}
 
             {/* Delete selected */}
             {hasSelection && activeTool === 'select' && (
@@ -980,7 +1030,7 @@ export default function InteractiveMap({
       <div ref={containerRef} className="map-canvas-area"
         style={{
           position: 'relative',
-          cursor: isShapeTool || (canEdit && activeTool === 'eraser') ? 'crosshair' : 'default',
+          cursor: isShapeTool || (canEdit && ['eraser', 'text'].includes(activeTool)) ? 'crosshair' : 'default',
         }}>
 
         {/* Read-only badge — Operator view */}
@@ -1064,7 +1114,7 @@ export default function InteractiveMap({
               // and in draw mode let the click pass through to the stage.
               const onShapeClick = e => {
                 if (!canEdit) { e.cancelBubble = true; setSelectedId(shape.id); return; }
-                if (activeTool === 'draw') return; // bubble up → stage places sensor
+                if (activeTool === 'draw' || activeTool === 'text') return; // bubble up → stage places it
                 e.cancelBubble = true;
                 if (activeTool === 'eraser') {
                   setShapes(prev => prev.filter(s => s.id !== shape.id));
@@ -1073,6 +1123,18 @@ export default function InteractiveMap({
                   setSelectedId(shape.id);
                 }
               };
+
+              if (shape.type === 'text') return (
+                <Text key={shape.id}
+                  x={shape.x} y={shape.y} text={shape.text || ' '}
+                  fontSize={shape.fontSize || 16} fontStyle="bold" fill={shape.color}
+                  textDecoration={sel ? 'underline' : ''}
+                  shadowColor={sel ? '#2563EB' : undefined} shadowBlur={sel ? 6 : 0}
+                  draggable={draggable}
+                  onClick={onShapeClick}
+                  onDragEnd={e => handleShapeDragEnd(shape, e)}
+                />
+              );
 
               if (shape.type === 'rect') return (
                 <Group key={shape.id}>

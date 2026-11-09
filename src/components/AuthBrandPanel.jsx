@@ -26,7 +26,7 @@ export default function AuthBrandPanel() {
 
       <p className="auth-brand-tagline">
         A scalable IoT framework for multi-sensor environmental monitoring
-        and regulation in aquaculture.
+        and regulation.
       </p>
 
       <ul className="auth-feature-list">
