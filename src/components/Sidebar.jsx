@@ -35,15 +35,6 @@ const IconTeam = () => (
   </svg>
 );
 
-// The SENSEful logo globe/sensor icon (simplified)
-const IconSensor = () => (
-  <svg viewBox="0 0 20 20" fill="white">
-    <circle cx="10" cy="10" r="3" />
-    <path d="M10 2a8 8 0 100 16A8 8 0 0010 2zm0 2a6 6 0 110 12A6 6 0 0110 4z" opacity="0.6" />
-    <path d="M10 5a5 5 0 100 10A5 5 0 0010 5zm0 2a3 3 0 110 6A3 3 0 0110 7z" opacity="0.3" />
-  </svg>
-);
-
 const IconLogout = () => (
   <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
     <path d="M7.5 17.5H5a1.5 1.5 0 01-1.5-1.5v-12A1.5 1.5 0 015 2.5h2.5M13 14l4-4-4-4M17 10H7.5" />
@@ -74,9 +65,7 @@ export default function Sidebar({ currentPage, onNavigate, unreadCount }) {
     <aside className="sidebar">
       {/* Brand */}
       <div className="sidebar-brand">
-        <div className="sidebar-logo">
-          <IconSensor />
-        </div>
+        <img className="sidebar-logo" src="/logo-mark.png" alt="" />
         <span className="sidebar-wordmark">SENSEable</span>
       </div>
 

@@ -81,12 +81,9 @@ input, select, textarea { font-family: inherit; }
 }
 .sidebar-logo {
   width: 34px; height: 34px;
-  background: var(--orange);
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
+  display: block;
 }
-.sidebar-logo svg { width: 18px; height: 18px; }
 .sidebar-wordmark {
   font-size: 16px;
   font-weight: 700;
@@ -603,12 +600,9 @@ input, select, textarea { font-family: inherit; }
   justify-content: space-between;
   padding: 48px 40px;
 }
-.auth-brand-mark {
-  display: flex; align-items: center; gap: 10px;
-}
-.auth-brand-mark .sidebar-logo { background: var(--orange); }
-.auth-brand-word {
-  font-size: 19px; font-weight: 700; color: #fff; letter-spacing: -0.01em;
+.auth-brand-logo {
+  width: 150px; height: auto;
+  display: block;
 }
 .auth-brand-tagline {
   font-size: 22px; font-weight: 700; line-height: 1.4;
