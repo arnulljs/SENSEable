@@ -1,9 +1,9 @@
 // SensorDetail.jsx — Per-port detail view (gauge + trend + history + Edit Sensor)
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import GaugeCard from '../components/GaugeCard';
 import { statusLabel, windowLine, fmt } from '../lib/windowStats';
 import { sensorProfiles as defaultProfiles } from '../mockData';
-import { fetchReadings } from '../api';
+import { fetchReadings, fetchSensorProfiles, createSensorProfile, deleteSensorProfile } from '../api';
 
 // "Export data" ranges. `null` = the rows on screen (no server call).
 const EXPORT_RANGES = [
@@ -16,30 +16,16 @@ const EXPORT_RANGES = [
   ['30d', 'Last 30 days', 30 * 24 * 3600e3],
 ];
 
-// Saved sensor profiles persist in localStorage (same pattern as the
-// Interactive Map's named save profiles) so they survive page navigation
-// and reloads, not just the lifetime of this component. Seeded from
-// mockData's defaults the first time, then the person's own saved/edited/
-// deleted profiles take over.
-const PROFILES_KEY = 'senseful_sensor_profiles';
-
-function loadProfiles() {
-  try {
-    const raw = window.localStorage.getItem(PROFILES_KEY);
-    return raw ? JSON.parse(raw) : defaultProfiles;
-  } catch {
-    return defaultProfiles;
-  }
-}
-
-function persistProfiles(profiles) {
-  try {
-    window.localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
-  } catch {
-    // Storage unavailable or full — saved profiles still work for this
-    // session, they just won't survive a reload.
-  }
-}
+// Saved sensor profiles live in the database (/api/sensor-profiles), per
+// organization, so they survive sign-out and are shared by its members. The
+// mockData defaults are built-in presets: listed unless the organization saved
+// one under the same name, and never deletable.
+const withBuiltins = (saved) => [
+  ...saved,
+  ...defaultProfiles
+    .filter((d) => !saved.some((p) => p.name === d.name))
+    .map((d) => ({ ...d, builtin: true })),
+];
 
 // ── Tiny SVG line chart ──────────────────────────────────────────────────────
 function TrendChart({ history, rangeMin, rangeMax }) {
@@ -137,6 +123,7 @@ function EditSensorModal({ port, profiles, onSaveProfile, onDeleteProfile, onSav
   const [newProfileName, setNewProfileName] = useState('');
   const [error, setError] = useState('');
   const [profileMsg, setProfileMsg] = useState('');
+  const [saving, setSaving] = useState(false);
 
   function setField(key, value) {
     setForm(prev => ({ ...prev, [key]: value }));
@@ -182,19 +169,32 @@ function EditSensorModal({ port, profiles, onSaveProfile, onDeleteProfile, onSav
     return { values: { label, unit, rangeMin, rangeMax, safeMin, safeMax } };
   }
 
-  function handleSaveAsProfile() {
+  async function handleSaveAsProfile() {
     const result = validate();
     if (result.error) { setError(result.error); return; }
-    if (!newProfileName.trim()) { setError('Enter a name to save this profile.'); return; }
-    onSaveProfile({ name: newProfileName.trim(), ...result.values });
-    setNewProfileName('');
-    setProfileMsg(`Saved "${newProfileName.trim()}" to profiles.`);
+    const name = newProfileName.trim();
+    if (!name) { setError('Enter a name to save this profile.'); return; }
+    try {
+      await onSaveProfile({ name, ...result.values });
+      setNewProfileName('');
+      setError('');
+      setProfileMsg(`Saved "${name}" to profiles.`);
+    } catch (e) {
+      setError(`Could not save the profile: ${e.message}`);
+    }
   }
 
-  function handleSubmit() {
+  async function handleDelete(id) {
+    try { await onDeleteProfile(id); setError(''); }
+    catch (e) { setError(`Could not delete the profile: ${e.message}`); }
+  }
+
+  async function handleSubmit() {
     const result = validate();
     if (result.error) { setError(result.error); return; }
-    onSave(result.values);
+    setSaving(true);
+    try { await onSave(result.values); }
+    catch (e) { setError(`Could not save: ${e.message}`); setSaving(false); }
   }
 
   return (
@@ -271,8 +271,10 @@ function EditSensorModal({ port, profiles, onSaveProfile, onDeleteProfile, onSav
               {profiles.map(p => (
                 <div className="saved-profile-row" key={p.id}>
                   <span>{p.name}</span>
-                  <button className="dp-del" title="Delete profile"
-                    onClick={() => onDeleteProfile(p.id)}>✕</button>
+                  {!p.builtin && (
+                    <button className="dp-del" title="Delete profile"
+                      onClick={() => handleDelete(p.id)}>✕</button>
+                  )}
                 </div>
               ))}
             </div>
@@ -281,7 +283,9 @@ function EditSensorModal({ port, profiles, onSaveProfile, onDeleteProfile, onSav
 
         <div className="modal-footer">
           <button className="btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" onClick={handleSubmit}>Save Changes</button>
+          <button className="btn-primary" onClick={handleSubmit} disabled={saving}>
+            {saving ? 'Saving…' : 'Save Changes'}
+          </button>
         </div>
       </div>
     </div>
@@ -302,26 +306,28 @@ export default function SensorDetail({ device, module, port, onBack, onUpdatePor
   const [exportRange, setExportRange] = useState('24h');
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState(null);
-  const [profiles, setProfiles] = useState(() => loadProfiles());
+  const [saved, setSaved] = useState([]);
+  const profiles = withBuiltins(saved);
 
-  function handleSaveProfile(profile) {
-    setProfiles(prev => {
-      const next = [...prev, { id: `profile-${Date.now()}`, ...profile }];
-      persistProfiles(next);
-      return next;
-    });
+  useEffect(() => {
+    let alive = true;
+    fetchSensorProfiles().then((rows) => { if (alive) setSaved(rows); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  // Both throw on failure; the form shows the message.
+  async function handleSaveProfile(profile) {
+    const row = await createSensorProfile(profile);
+    setSaved(prev => [...prev.filter(p => p.name !== row.name), row]);
   }
 
-  function handleDeleteProfile(id) {
-    setProfiles(prev => {
-      const next = prev.filter(p => p.id !== id);
-      persistProfiles(next);
-      return next;
-    });
+  async function handleDeleteProfile(id) {
+    await deleteSensorProfile(id);
+    setSaved(prev => prev.filter(p => p.id !== id));
   }
 
-  function handleSaveSensor(values) {
-    onUpdatePort?.(values);
+  async function handleSaveSensor(values) {
+    await onUpdatePort?.(values);
     setShowEditModal(false);
   }
 

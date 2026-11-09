@@ -20,6 +20,7 @@ import {
   writeHandler, markAllNotificationsRead, markNotificationRead,
   createFormula, deleteFormula, fitLinear, assignPortFormula, saveMapSensors,
   renameDevice, renameModule, renameActuator, setPortEnabled,
+  updatePortConfig, createSensorProfile, deleteSensorProfile,
   removeDevice, removeModule, removePort, postCommand,
 } from './_write.js';
 
@@ -51,6 +52,9 @@ const WRITES = [
   // Designer-only (A-12): Operators view the map but may not rearrange it.
   ['PUT',    ['map-sensors'],                          saveMapSensors, { designerOnly: true }],
 
+  ['POST',   ['sensor-profiles'],                      createSensorProfile],
+  ['DELETE', ['sensor-profiles', ':id'],               deleteSensorProfile],
+
   ['POST',   ['commands'],                             postCommand],
 
   ['PATCH',  ['devices', ':deviceId'],                 renameDevice],
@@ -58,6 +62,7 @@ const WRITES = [
   ['PATCH',  ['devices', ':deviceId', 'actuators', ':actuatorId'], renameActuator],
   ['PATCH',  ['devices', ':deviceId', 'modules', ':moduleId', 'ports', ':portId', 'enabled'],
                                                        setPortEnabled],
+  ['PATCH',  ['devices', ':deviceId', 'modules', ':moduleId', 'ports', ':portId'], updatePortConfig],
   ['PUT',    ['devices', ':deviceId', 'modules', ':moduleId', 'ports', ':portId', 'formula'],
                                                        assignPortFormula],
 

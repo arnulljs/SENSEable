@@ -213,6 +213,60 @@ export const renameModule = async (client, { deviceId, moduleId, body }) => {
   return { ok: true, name };
 };
 
+// ── Sensor metadata (Edit Sensor) ───────────────────────────────────────────
+// Label, unit, range and safe band of one port. The same rules as the Edit
+// Sensor form, checked again here: the browser is not a trust boundary.
+function sensorConfig(body) {
+  const label = String(body?.label ?? '').trim();
+  const unit = String(body?.unit ?? '').trim();
+  const [rangeMin, rangeMax, safeMin, safeMax] =
+    ['rangeMin', 'rangeMax', 'safeMin', 'safeMax'].map((k) => Number(body?.[k]));
+  if (!label || !unit) throw bad(400, 'label and unit are required');
+  if (![rangeMin, rangeMax, safeMin, safeMax].every(Number.isFinite)) throw bad(400, 'range and safe values must be numbers');
+  if (rangeMin >= rangeMax) throw bad(400, 'range min must be less than range max');
+  if (safeMin > safeMax || safeMin < rangeMin || safeMax > rangeMax) {
+    throw bad(400, 'safe range must fall within the overall range');
+  }
+  return { label, unit, rangeMin, rangeMax, safeMin, safeMax };
+}
+
+export const updatePortConfig = async (client, { deviceId, moduleId, portId, body }) => {
+  const c = sensorConfig(body);
+  const { rowCount } = await client.query(
+    `UPDATE ports p SET label = $4, unit = $5, range_min = $6, range_max = $7,
+                        safe_min = $8, safe_max = $9, configured = true
+       FROM modules m, devices d
+      WHERE m.module_id = p.module_id AND d.device_id = m.device_id
+        AND d.node_id = $1 AND lower(m.i2c_address) = lower($2) AND p.port_code = $3`,
+    [nodeIdOf(deviceId), moduleId, portId, c.label, c.unit, c.rangeMin, c.rangeMax, c.safeMin, c.safeMax]);
+  if (!rowCount) throw bad(404, 'channel not found');
+  return { ok: true, ...c };
+};
+
+// ── Sensor profiles (named presets for Edit Sensor) ─────────────────────────
+// One per (organization, name): saving under an existing name replaces it.
+export const createSensorProfile = async (client, { tenantSlug, body }) => {
+  const name = String(body?.name ?? '').trim();
+  if (!name) throw bad(400, 'profile name required');
+  const c = sensorConfig(body);
+  const { rows } = await client.query(
+    `INSERT INTO sensor_profiles (tenant_id, name, label, unit, range_min, range_max, safe_min, safe_max)
+     VALUES ((SELECT tenant_id FROM tenants WHERE slug = $1), $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (tenant_id, name) DO UPDATE SET
+       label = EXCLUDED.label, unit = EXCLUDED.unit, range_min = EXCLUDED.range_min,
+       range_max = EXCLUDED.range_max, safe_min = EXCLUDED.safe_min, safe_max = EXCLUDED.safe_max
+     RETURNING profile_id`,
+    [tenantSlug, name, c.label, c.unit, c.rangeMin, c.rangeMax, c.safeMin, c.safeMax]);
+  return { id: rows[0].profile_id, tenantId: tenantSlug, name, ...c };
+};
+
+export const deleteSensorProfile = async (client, { id }) => {
+  const { rowCount } = await client.query(
+    'DELETE FROM sensor_profiles WHERE profile_id::text = $1', [String(id)]);
+  if (!rowCount) throw bad(404, 'profile not found');
+  return { ok: true };
+};
+
 export const renameActuator = async (client, { deviceId, actuatorId, body }) => {
   const name = String(body?.name ?? '').trim();
   if (!name) throw bad(400, 'name required');

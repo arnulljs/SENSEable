@@ -22,6 +22,7 @@ import {
 import {
   fetchDevices, actuate, setTenant,
   renameDevice as apiRenameDevice,
+  updatePortConfig as apiUpdatePortConfig,
   renameModule as apiRenameModule,
   renameActuator as apiRenameActuator,
   removeDevice as apiRemoveDevice,
@@ -362,7 +363,26 @@ export default function App() {
   // resulting value + thresholds, so lowering safeMax/rangeMax (or raising
   // safeMin/rangeMin) below/above the current reading immediately flips the
   // badge instead of leaving it pointing at whatever it was set to before.
-  function updatePort(deviceId, moduleId, portId, updates) {
+  // Saved to the database, so the edit survives a reload or sign-out. Applied
+  // locally first; if the save fails the old values come back and the error is
+  // rethrown for the Edit Sensor form to show.
+  async function updatePort(deviceId, moduleId, portId, updates) {
+    assertWritable('Editing a sensor');
+    const old = allDevicesState.find(d => d.id === deviceId)
+      ?.modules.find(m => m.id === moduleId)?.ports.find(p => p.id === portId);
+    patchPort(deviceId, moduleId, portId, updates);
+    try {
+      await apiUpdatePortConfig(deviceId, moduleId, portId, updates);
+    } catch (e) {
+      if (old) {
+        const { label, unit, rangeMin, rangeMax, safeMin, safeMax } = old;
+        patchPort(deviceId, moduleId, portId, { label, unit, rangeMin, rangeMax, safeMin, safeMax });
+      }
+      throw e;
+    }
+  }
+
+  function patchPort(deviceId, moduleId, portId, updates) {
     setAllDevicesState(prev => prev.map(d => {
       if (d.id !== deviceId) return d;
       return {

@@ -245,6 +245,15 @@ export const assignPortFormula = (deviceId, moduleId, portId, formulaLabel) =>
     `/devices/${encodeURIComponent(deviceId)}/modules/${encodeURIComponent(moduleId)}/ports/${encodeURIComponent(portId)}/formula`,
     { formulaLabel });
 
+// ── Sensor metadata and profiles (Edit Sensor) ──────────────────────────────
+export const updatePortConfig = (deviceId, moduleId, portId, config) =>
+  send('PATCH',
+    `/devices/${encodeURIComponent(deviceId)}/modules/${encodeURIComponent(moduleId)}/ports/${encodeURIComponent(portId)}`,
+    config);
+export const fetchSensorProfiles = () => get('/sensor-profiles');
+export const createSensorProfile = (profile) => send('POST', '/sensor-profiles', profile);
+export const deleteSensorProfile = (id) => send('DELETE', `/sensor-profiles/${encodeURIComponent(id)}`);
+
 // ── Renames (persist to the DB; response echoes the updated device) ─────────
 
 export const renameDevice = (deviceId, name) =>
