@@ -48,7 +48,8 @@ const WRITES = [
   ['POST',   ['formulas'],                             createFormula],
   ['DELETE', ['formulas', ':id'],                      deleteFormula],
 
-  ['PUT',    ['map-sensors'],                          saveMapSensors],
+  // Designer-only (A-12): Operators view the map but may not rearrange it.
+  ['PUT',    ['map-sensors'],                          saveMapSensors, { designerOnly: true }],
 
   ['POST',   ['commands'],                             postCommand],
 
@@ -66,7 +67,7 @@ const WRITES = [
 ];
 
 function matchWrite(method, segments) {
-  for (const [verb, pattern, fn] of WRITES) {
+  for (const [verb, pattern, fn, opts = {}] of WRITES) {
     if (verb !== method || pattern.length !== segments.length) continue;
     const params = {};
     let ok = true;
@@ -75,7 +76,7 @@ function matchWrite(method, segments) {
       if (p.startsWith(':')) params[p.slice(1)] = decodeURIComponent(segments[i]);
       else if (p !== segments[i]) { ok = false; break; }
     }
-    if (ok) return { fn, params, verb };
+    if (ok) return { fn, params, verb, opts };
   }
   return null;
 }
@@ -106,5 +107,5 @@ export default function handler(req, res) {
   // the same way it reads a query string, which is what lets one signature serve
   // both.
   req.query = { ...req.query, ...hit.params };
-  return writeHandler(hit.fn, { methods: [hit.verb] })(req, res);
+  return writeHandler(hit.fn, { methods: [hit.verb], ...hit.opts })(req, res);
 }

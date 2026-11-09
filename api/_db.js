@@ -93,10 +93,11 @@ const admin = () => (_admin ??= createClient(
 const CALLER_TTL_MS = Number(process.env.CALLER_TTL_MS ?? 60_000);
 const callerCache = new Map();   // token -> { slug, at }
 
-export async function tenantForToken(token) {
+/** Verified token → { slug, role } of the caller's membership. */
+async function memberForToken(token) {
   if (!token) throw httpErr(401, 'sign in required');
   const hit = callerCache.get(token);
-  if (hit && Date.now() - hit.at < CALLER_TTL_MS) return hit.slug;
+  if (hit && Date.now() - hit.at < CALLER_TTL_MS) return hit;
 
   const { data, error } = await admin().auth.getUser(token);
   if (error || !data?.user) throw httpErr(401, 'invalid or expired session — sign in again');
@@ -112,17 +113,29 @@ export async function tenantForToken(token) {
   // ponytail: whole-map clear at a size cap, not LRU. Warm instances are
   // short-lived and the cap is only there to stop unbounded growth.
   if (callerCache.size > 1000) callerCache.clear();
-  callerCache.set(token, { slug: m.slug, at: Date.now() });
-  return m.slug;
+  const member = { slug: m.slug, role: m.role_id, at: Date.now() };
+  callerCache.set(token, member);
+  return member;
 }
 
-/** The tenant this request may act as, from its verified bearer token. */
-export async function callerTenant(req) {
+export async function tenantForToken(token) {
+  return (await memberForToken(token)).slug;
+}
+
+/**
+ * The tenant this request may act as, from its verified bearer token.
+ * designerOnly: refuse (403) any member whose role is not 'designer'. The UI
+ * hides these actions from Operators, but that alone stops no one with a token.
+ */
+export async function callerTenant(req, { designerOnly = false } = {}) {
   const auth = req.headers?.authorization || '';
-  const slug = await tenantForToken(auth.startsWith('Bearer ') ? auth.slice(7) : null);
+  const { slug, role } = await memberForToken(auth.startsWith('Bearer ') ? auth.slice(7) : null);
   const claimed = tenantOf(req);
   if (claimed && claimed !== slug) {
     throw httpErr(403, `not a member of organization '${claimed}'`);
+  }
+  if (designerOnly && role !== 'designer') {
+    throw httpErr(403, 'only a Designer can change this');
   }
   return slug;
 }

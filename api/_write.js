@@ -481,7 +481,7 @@ export const fitLinear = async (_client, { body }) => {
  * Wrap a mutation into a Vercel handler. Mirrors readHandler(), minus the cache
  * header: a mutation response must never be cached by the CDN.
  */
-export function writeHandler(fn, { methods = ['POST'] } = {}) {
+export function writeHandler(fn, { methods = ['POST'], designerOnly = false } = {}) {
   return async function handler(req, res) {
     if (!methods.includes(req.method)) {
       res.setHeader('Allow', methods.join(', '));
@@ -491,7 +491,7 @@ export function writeHandler(fn, { methods = ['POST'] } = {}) {
       // The tenant comes from the VERIFIED session, never from the header alone:
       // this endpoint actuates physical hardware, and a bare x-tenant-id let any
       // caller act as any organisation.
-      const slug = await callerTenant(req);
+      const slug = await callerTenant(req, { designerOnly });
       const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body ?? {});
       const data = await withTenantScope(slug, (client) =>
         fn(client, { ...req.query, tenantSlug: slug, body, req }));
